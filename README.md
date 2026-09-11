@@ -91,6 +91,10 @@ echo 'source ~/.pi-sync-complete.zsh' >> ~/.zshrc
 _PI_SYNC_COMPLETE=fish_source pi-sync | source
 ```
 
+Writing the script out (rather than `eval "$(_PI_SYNC_COMPLETE=bash_source pi-sync)"`
+on every shell start) keeps shell startup fast, since the eval form runs the
+binary each time. PowerShell works the same way via `powershell_source`.
+
 Completions are read from the config at completion time, so new hosts appear
 without regenerating anything.
 

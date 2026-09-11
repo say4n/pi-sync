@@ -53,7 +53,9 @@ def local_agent_dir(override: str | None = None) -> Path:
     return Path(raw).expanduser()
 
 
-def ssh_hosts(config: str = SSH_CONFIG, _seen: frozenset[str] = frozenset()) -> list[str]:
+def ssh_hosts(
+    config: str = SSH_CONFIG, _seen: frozenset[str] = frozenset()
+) -> list[str]:
     """Host aliases from an ssh config, following Include and skipping wildcards."""
     path = Path(config).expanduser()
     if not path.is_file():
@@ -82,7 +84,9 @@ def ssh_hosts(config: str = SSH_CONFIG, _seen: frozenset[str] = frozenset()) -> 
                 if not target.is_absolute():
                     target = Path.home() / ".ssh" / target
                 for included in sorted(target.parent.glob(target.name)):
-                    hosts += [h for h in ssh_hosts(str(included), seen) if h not in hosts]
+                    hosts += [
+                        h for h in ssh_hosts(str(included), seen) if h not in hosts
+                    ]
     return hosts
 
 
@@ -92,7 +96,11 @@ def complete_target(
     """Complete the host part of a target from the user's ssh config."""
     prefix = incomplete.rpartition("@")[2]
     lead = incomplete[: len(incomplete) - len(prefix)] if prefix else incomplete
-    return [CompletionItem(f"{lead}{host}") for host in ssh_hosts() if host.startswith(prefix)]
+    return [
+        CompletionItem(f"{lead}{host}")
+        for host in ssh_hosts()
+        if host.startswith(prefix)
+    ]
 
 
 def select_items(groups: set[str]) -> list[str]:
@@ -126,7 +134,9 @@ def rsync_argv(
     return argv
 
 
-def run_cmd(argv: list[str], input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+def run_cmd(
+    argv: list[str], input_text: str | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, capture_output=True, text=True, input=input_text)
 
 
@@ -171,7 +181,9 @@ def ensure_pi(target: str, assume_yes: bool, remote_dir: str) -> bool:
     """
     if not assume_yes:
         if not sys.stdin.isatty():
-            click.secho("  pi not installed — skipping (pass --install to add it)", fg="yellow")
+            click.secho(
+                "  pi not installed — skipping (pass --install to add it)", fg="yellow"
+            )
             return False
         prompt = f"  pi is not installed on {target}. install it?"
         if not click.confirm(prompt, default=False):
@@ -220,7 +232,9 @@ def sync_host(
             click.echo(f"  $ {' '.join(argv)}")
         proc = run_cmd(argv)
         if verbose and proc.stdout:
-            click.echo("".join(f"    {line}\n" for line in proc.stdout.splitlines()), nl=False)
+            click.echo(
+                "".join(f"    {line}\n" for line in proc.stdout.splitlines()), nl=False
+            )
         if proc.returncode != 0:
             ok = False
             click.secho(f"  {rel:<14} FAILED", fg="red")
@@ -236,7 +250,9 @@ def sync_host(
             parts.append(f"{transferred} file{'s' if transferred != 1 else ''}")
         if deleted:
             parts.append(f"{deleted} deleted")
-        click.secho(f"  {rel:<14} {'would copy' if dry_run else 'copied'} {', '.join(parts)}")
+        click.secho(
+            f"  {rel:<14} {'would copy' if dry_run else 'copied'} {', '.join(parts)}"
+        )
     return ok
 
 
@@ -248,10 +264,18 @@ def sync_host(
     metavar="[USER@]HOST...",
     shell_complete=complete_target,
 )
-@click.option("--all", "all_", is_flag=True, help="Sync config and extensions (the default).")
-@click.option("--config", "config_", is_flag=True, help="Sync models.json and settings.json.")
-@click.option("--extensions", "extensions_", is_flag=True, help="Sync the extensions/ directory.")
-@click.option("--auth", "auth_", is_flag=True, help="Sync auth.json (contains API keys).")
+@click.option(
+    "--all", "all_", is_flag=True, help="Sync config and extensions (the default)."
+)
+@click.option(
+    "--config", "config_", is_flag=True, help="Sync models.json and settings.json."
+)
+@click.option(
+    "--extensions", "extensions_", is_flag=True, help="Sync the extensions/ directory."
+)
+@click.option(
+    "--auth", "auth_", is_flag=True, help="Sync auth.json (contains API keys)."
+)
 @click.option("--pull", is_flag=True, help="Copy host → local instead of local → host.")
 @click.option(
     "--delete",
@@ -259,7 +283,9 @@ def sync_host(
     is_flag=True,
     help="Mirror extensions/ exactly, deleting files absent from the source.",
 )
-@click.option("--dry-run", is_flag=True, help="Report changes without copying anything.")
+@click.option(
+    "--dry-run", is_flag=True, help="Report changes without copying anything."
+)
 @click.option(
     "-x",
     "--exclude",
@@ -285,7 +311,9 @@ def sync_host(
     show_default=True,
     help="Agent dir on the host.",
 )
-@click.option("-v", "--verbose", is_flag=True, help="Print each rsync command and its output.")
+@click.option(
+    "-v", "--verbose", is_flag=True, help="Print each rsync command and its output."
+)
 def main(
     targets: tuple[str, ...],
     all_: bool,
@@ -322,7 +350,9 @@ def main(
     items = select_items(groups)
 
     if auth_ and not pull:
-        click.secho("! auth.json contains API keys and will be copied to the host", fg="yellow")
+        click.secho(
+            "! auth.json contains API keys and will be copied to the host", fg="yellow"
+        )
 
     agent_dir = local_agent_dir(local_dir)
     click.echo(
