@@ -1,6 +1,6 @@
 [project]
 name = "pi-sync-cli"
-version = "0.2.0"
+version = "0.3.0"
 description = "Sync pi agent config and extensions between hosts over rsync"
 readme = "README.md"
 requires-python = ">=3.10"
