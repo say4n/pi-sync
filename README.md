@@ -46,6 +46,7 @@ Host-local state is deliberately never touched: `sessions/`, `npm/`,
 | `--dry-run` | report changes, copy nothing |
 | `-x, --exclude PATTERN` | skip matching files (repeatable) |
 | `--install` | install pi on hosts that lack it, without prompting |
+| `--uninstall` | remove pi from the host instead of syncing (config is kept) |
 | `--local-dir` | default `$PI_CODING_AGENT_DIR` or `~/.pi/agent` |
 | `--remote-dir` | default `~/.pi/agent` |
 | `-v` / `--verbose` | print each rsync command and its output |
@@ -80,6 +81,21 @@ The probe checks `command -v pi` plus the usual install locations
 (`~/.local/bin`, `~/.pi/bin`, `~/.pi/agent/bin`, linuxbrew, homebrew,
 `/usr/local/bin`), because a non-interactive ssh session does not source the
 host's shell init — on a linuxbrew host `command -v pi` alone misses it.
+
+## Uninstalling
+
+`--uninstall` removes pi from the host instead of syncing. It runs
+`npm uninstall -g --prefix <prefix> @earendil-works/pi-coding-agent`, deriving the
+prefix from where pi actually lives (as the official installer does), then
+re-probes to confirm the binary is really gone — npm can exit 0 having removed
+nothing. `~/.pi/agent` is deliberately left untouched, since that is your config
+rather than the CLI.
+
+This exists because the official installer can only uninstall through its
+interactive menu: its unattended mode always installs or reinstalls. If the
+uninstall fails, that is usually a managed install
+(`PI_EXPERIMENTAL=1`, under `<agent dir>/install`) — run
+`curl -fsSL https://pi.dev/install.sh | sh` on the host and choose `u`.
 
 ## Shell completions
 

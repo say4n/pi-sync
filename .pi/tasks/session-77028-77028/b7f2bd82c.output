@@ -1,0 +1,10 @@
+pushing models.json, settings.json, extensions to 1 host(s)
+local: /Users/sayan/.pi/agent
+remote: ~/.pi/agent
+
+→ pi
+  running pi's installer (unattended)
+  pi installed; continuing with the sync
+  models.json    already in sync
+  settings.json  already in sync
+  extensions     already in sync

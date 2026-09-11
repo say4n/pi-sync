@@ -29,6 +29,8 @@ class FakeRun:
         pi_path: str | None = "/usr/bin/pi",
         install_rc: int = 0,
         install_installs: bool = True,
+        uninstall_rc: int = 0,
+        uninstall_removes: bool = True,
     ):
         self.calls: list[list[str]] = []
         self.inputs: list[str | None] = []
@@ -39,6 +41,8 @@ class FakeRun:
         self.pi_path = pi_path
         self.install_rc = install_rc
         self.install_installs = install_installs
+        self.uninstall_rc = uninstall_rc
+        self.uninstall_removes = uninstall_removes
         self.installed = False
 
     def __call__(
@@ -50,6 +54,13 @@ class FakeRun:
         if argv[0] != "ssh":
             return subprocess.CompletedProcess(
                 argv, self.rsync_rc, self.rsync_stdout, ""
+            )
+        if any("npm uninstall" in arg for arg in argv):
+            if self.uninstall_rc == 0 and self.uninstall_removes:
+                self.pi_path = None
+            stderr = "" if self.uninstall_rc == 0 else "npm ERR! code E404"
+            return subprocess.CompletedProcess(
+                argv, self.uninstall_rc, "removed\n", stderr
             )
         if any("install.sh" in arg for arg in argv):
             if self.install_rc == 0:
@@ -550,3 +561,72 @@ class TestInstallOffering:
         )
         assert result.exit_code == 1
         assert install_calls(fake) == []
+
+
+class TestUninstall:
+    def uninstall_calls(self, fake: FakeRun) -> list[list[str]]:
+        return [c for c in fake.calls if any("npm uninstall" in a for a in c)]
+
+    def test_uninstalls_with_the_prefix_pi_lives_in(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        fake = FakeRun(pi_path="/home/linuxbrew/.linuxbrew/bin/pi")
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(cli.main, ["--uninstall", "host"])
+        assert result.exit_code == 0, result.output
+        (call,) = self.uninstall_calls(fake)
+        cmd = call[-1]
+        assert "npm uninstall -g --prefix /home/linuxbrew/.linuxbrew" in cmd
+        assert cli.PI_PACKAGE in cmd
+        assert "~/.pi/agent was left alone" in result.output
+        # uninstalling never syncs
+        assert not any(c[0] == "rsync" for c in fake.calls)
+
+    def test_absent_pi_is_a_noop(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        fake = FakeRun(pi_path=None)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(cli.main, ["--uninstall", "host"])
+        assert result.exit_code == 0
+        assert "nothing to uninstall" in result.output
+        assert self.uninstall_calls(fake) == []
+
+    def test_npm_failure_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        fake = FakeRun(pi_path="/usr/bin/pi", uninstall_rc=1)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(cli.main, ["--uninstall", "host"])
+        assert result.exit_code == 1
+        assert "npm ERR!" in result.output
+
+    def test_still_present_after_uninstall_is_a_failure(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        """npm can exit 0 having removed nothing; the re-probe has the last word."""
+        fake = FakeRun(pi_path="/usr/bin/pi", uninstall_removes=False)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(cli.main, ["--uninstall", "host"])
+        assert result.exit_code == 1
+        assert "still present at /usr/bin/pi" in result.output
+
+    def test_dry_run_uninstall_changes_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        fake = FakeRun(pi_path="/usr/bin/pi")
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(cli.main, ["--uninstall", "--dry-run", "host"])
+        assert result.exit_code == 0
+        assert "would run: npm uninstall" in result.output
+        assert self.uninstall_calls(fake) == []
+
+    def test_unreachable_host_fails(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        fake = FakeRun(ssh_rc=255)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(cli.main, ["--uninstall", "host"])
+        assert result.exit_code == 1
+        assert "unreachable" in result.output
+        assert self.uninstall_calls(fake) == []

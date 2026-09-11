@@ -24,6 +24,7 @@ from click.shell_completion import CompletionItem
 DEFAULT_AGENT_DIR = "~/.pi/agent"
 SSH_CONFIG = "~/.ssh/config"
 PI_INSTALL_CMD = "curl -fsSL https://pi.dev/install.sh | sh"
+PI_PACKAGE = "@earendil-works/pi-coding-agent"
 # One ssh round trip answers both "is it reachable" and "where is pi".
 PI_PROBE = """\
 found="$(command -v pi 2>/dev/null)"
@@ -195,6 +196,30 @@ def install_pi(target: str) -> str | None:
     return None
 
 
+def uninstall_pi(target: str, pi_path: str) -> str | None:
+    """Remove pi's npm install. Returns an error message, or None on success.
+
+    Mirrors the installer's own npm path — the prefix comes from where pi
+    actually lives — because its unattended mode can only install or reinstall;
+    uninstall is reachable only through its interactive menu. Like the
+    installer, the result is verified rather than trusted, and only the CLI is
+    removed: the agent directory is left alone.
+    """
+    prefix = Path(pi_path).parent.parent
+    cmd = (
+        f"npm uninstall -g --prefix {prefix} --no-fund --no-audit "
+        f"--loglevel=error --progress=false {PI_PACKAGE}"
+    )
+    proc = run_cmd(["ssh", target, cmd])
+    if proc.returncode:
+        detail = ((proc.stderr or proc.stdout) or "").strip().splitlines()
+        return detail[-1] if detail else f"npm uninstall exited {proc.returncode}"
+    _, remaining = probe_host(target)
+    if remaining:
+        return f"npm uninstall finished, but pi is still present at {remaining}"
+    return None
+
+
 def ensure_pi(target: str, assume_yes: bool, remote_dir: str) -> bool:
     """Make sure the host has pi. Returns False when the host must be skipped.
 
@@ -328,6 +353,12 @@ def sync_host(
     help="Install pi on hosts that lack it, without prompting.",
 )
 @click.option(
+    "--uninstall",
+    "uninstall_",
+    is_flag=True,
+    help="Uninstall pi from the host instead of syncing (keeps ~/.pi/agent).",
+)
+@click.option(
     "--local-dir",
     default=None,
     help="Local agent dir (default: $PI_CODING_AGENT_DIR or ~/.pi/agent).",
@@ -352,6 +383,7 @@ def main(
     dry_run: bool,
     excludes: tuple[str, ...],
     install_: bool,
+    uninstall_: bool,
     local_dir: str | None,
     remote_dir: str,
     verbose: bool,
@@ -397,6 +429,25 @@ def main(
             click.secho(f"→ {target}\n  unreachable: {error}", fg="red")
             continue
         click.secho(f"→ {target}", bold=True)
+        if uninstall_:
+            if pi_path is None:
+                click.secho("  pi is not installed — nothing to uninstall")
+                continue
+            prefix = Path(pi_path).parent.parent
+            if dry_run:
+                click.secho(f"  would run: npm uninstall -g --prefix {prefix} {PI_PACKAGE}")
+                continue
+            click.secho(f"  uninstalling pi from {pi_path}...")
+            error = uninstall_pi(target, pi_path)
+            if error:
+                failed = True
+                click.secho(f"  {error}", fg="red")
+                click.secho(
+                    "  for a managed install, run the installer and choose 'u'", fg="yellow"
+                )
+            else:
+                click.secho("  pi uninstalled — ~/.pi/agent was left alone", fg="green")
+            continue
         if pi_path is None:
             if dry_run:
                 click.secho("  pi not installed — nothing would be synced", fg="yellow")
