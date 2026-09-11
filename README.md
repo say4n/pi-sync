@@ -13,8 +13,11 @@ pi-sync --dry-run --all a b      # preview against two hosts
 ## Install
 
 ```bash
-pipx install .        # or: uv tool install .
+pipx install pi-sync                                  # from PyPI
+pipx install git+ssh://git@github.com/say4n/pi-sync   # from source (needs access)
 ```
+
+Requires Python 3.10+. `uv tool install` works in place of `pipx install`.
 
 ## What syncs
 

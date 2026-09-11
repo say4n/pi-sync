@@ -6,7 +6,18 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
+authors = [{ name = "Sayan Goswami" }]
+keywords = ["pi", "rsync", "dotfiles", "sync", "agent-config"]
+classifiers = [
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Archiving :: Mirroring",
+]
 dependencies = ["click>=8.1"]
+
+[project.urls]
+Repository = "https://github.com/say4n/pi-sync"
+Issues = "https://github.com/say4n/pi-sync/issues"
 
 [project.scripts]
 pi-sync = "pi_sync.cli:main"
