@@ -1,0 +1,268 @@
+"""pi-sync — push or pull pi agent config between hosts over rsync.
+
+Only the declarative parts of the agent dir are syncable:
+
+    config      models.json, settings.json   (hand-written, portable)
+    extensions  extensions/                  (your extension code)
+    auth        auth.json                    (secrets, opt-in)
+
+Host-local state (sessions/, npm/, models-store.json, ayu/, bin/, trust.json)
+is deliberately never touched.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from collections.abc import Sequence
+from pathlib import Path
+
+import click
+
+DEFAULT_AGENT_DIR = "~/.pi/agent"
+DIRECTORY_ITEMS = frozenset({"extensions"})
+GROUPS: dict[str, tuple[str, ...]] = {
+    "config": ("models.json", "settings.json"),
+    "extensions": ("extensions",),
+    "auth": ("auth.json",),
+}
+# Order groups are synced in, so output is stable.
+GROUP_ORDER = ("config", "extensions", "auth")
+
+
+def local_agent_dir(override: str | None = None) -> Path:
+    """Local agent dir: explicit flag, else $PI_CODING_AGENT_DIR, else ~/.pi/agent."""
+    raw = override or os.environ.get("PI_CODING_AGENT_DIR") or DEFAULT_AGENT_DIR
+    return Path(raw).expanduser()
+
+
+def select_items(groups: set[str]) -> list[str]:
+    return [item for group in GROUP_ORDER if group in groups for item in GROUPS[group]]
+
+
+def rsync_argv(
+    rel: str,
+    target: str,
+    local_dir: Path,
+    remote_dir: str,
+    *,
+    pull: bool = False,
+    delete: bool = False,
+    dry_run: bool = False,
+    excludes: Sequence[str] = (),
+) -> list[str]:
+    """One rsync invocation for one item, in the requested direction."""
+    remote = f"{target}:{remote_dir.rstrip('/')}/{rel}"
+    local = str(local_dir / rel)
+    if rel in DIRECTORY_ITEMS:
+        remote += "/"  # copy contents, not the directory itself
+        local += "/"
+    argv = ["rsync", "-az", "-i"]
+    argv += [f"--exclude={pattern}" for pattern in excludes]
+    if delete and rel in DIRECTORY_ITEMS:
+        argv.append("--delete-during")
+    if dry_run:
+        argv.append("-n")
+    argv += [remote, local] if pull else [local, remote]
+    return argv
+
+
+def run_cmd(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, capture_output=True, text=True)
+
+
+def summarize(output: str) -> tuple[int, int]:
+    """Count transferred files and deletions from rsync --itemize-changes output."""
+    transferred = deleted = 0
+    for line in output.splitlines():
+        if line.startswith("*deleting"):
+            deleted += 1
+        elif line[:1] in ("<", ">"):
+            transferred += 1
+    return transferred, deleted
+
+
+def check_ssh(target: str) -> str | None:
+    """Return an error message if the host is unreachable, else None."""
+    proc = run_cmd(["ssh", "-o", "ConnectTimeout=10", target, "true"])
+    if proc.returncode == 0:
+        return None
+    detail = (proc.stderr or proc.stdout or "ssh failed").strip().splitlines()
+    return detail[0] if detail else "ssh failed"
+
+
+def sync_host(
+    target: str,
+    items: list[str],
+    local_dir: Path,
+    remote_dir: str,
+    *,
+    pull: bool,
+    delete: bool,
+    dry_run: bool,
+    verbose: bool,
+    excludes: Sequence[str] = (),
+) -> bool:
+    click.secho(f"→ {target}", bold=True)
+    ok = True
+    for rel in items:
+        if not pull and not (local_dir / rel).exists():
+            click.secho(f"  {rel:<14} skipped (not found locally)", fg="yellow")
+            continue
+        argv = rsync_argv(
+            rel,
+            target,
+            local_dir,
+            remote_dir,
+            pull=pull,
+            delete=delete,
+            dry_run=dry_run,
+            excludes=excludes,
+        )
+        if verbose:
+            click.echo(f"  $ {' '.join(argv)}")
+        proc = run_cmd(argv)
+        if verbose and proc.stdout:
+            click.echo(
+                "".join(f"    {line}\n" for line in proc.stdout.splitlines()), nl=False
+            )
+        if proc.returncode != 0:
+            ok = False
+            click.secho(f"  {rel:<14} FAILED", fg="red")
+            for line in (proc.stderr or proc.stdout).strip().splitlines()[:5]:
+                click.echo(f"    {line}")
+            continue
+        transferred, deleted = summarize(proc.stdout)
+        if not transferred and not deleted:
+            click.secho(f"  {rel:<14} already in sync")
+            continue
+        parts = []
+        if transferred:
+            parts.append(f"{transferred} file{'s' if transferred != 1 else ''}")
+        if deleted:
+            parts.append(f"{deleted} deleted")
+        click.secho(
+            f"  {rel:<14} {'would copy' if dry_run else 'copied'} {', '.join(parts)}"
+        )
+    return ok
+
+
+@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("targets", nargs=-1, required=True, metavar="[USER@]HOST...")
+@click.option(
+    "--all", "all_", is_flag=True, help="Sync config and extensions (the default)."
+)
+@click.option(
+    "--config", "config_", is_flag=True, help="Sync models.json and settings.json."
+)
+@click.option(
+    "--extensions", "extensions_", is_flag=True, help="Sync the extensions/ directory."
+)
+@click.option(
+    "--auth", "auth_", is_flag=True, help="Sync auth.json (contains API keys)."
+)
+@click.option("--pull", is_flag=True, help="Copy host → local instead of local → host.")
+@click.option(
+    "--delete",
+    "delete_",
+    is_flag=True,
+    help="Mirror extensions/ exactly, deleting files absent from the source.",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Report changes without copying anything."
+)
+@click.option(
+    "-x",
+    "--exclude",
+    "excludes",
+    multiple=True,
+    metavar="PATTERN",
+    help="rsync exclude pattern, e.g. '*/logs/*' (repeatable).",
+)
+@click.option(
+    "--local-dir",
+    default=None,
+    help="Local agent dir (default: $PI_CODING_AGENT_DIR or ~/.pi/agent).",
+)
+@click.option(
+    "--remote-dir",
+    default=DEFAULT_AGENT_DIR,
+    show_default=True,
+    help="Agent dir on the host.",
+)
+@click.option(
+    "-v", "--verbose", is_flag=True, help="Print each rsync command and its output."
+)
+def main(
+    targets: tuple[str, ...],
+    all_: bool,
+    config_: bool,
+    extensions_: bool,
+    auth_: bool,
+    pull: bool,
+    delete_: bool,
+    dry_run: bool,
+    excludes: tuple[str, ...],
+    local_dir: str | None,
+    remote_dir: str,
+    verbose: bool,
+) -> None:
+    """Sync pi agent config to one or more hosts, using your ssh config for routing.
+
+    \b
+    pi-sync tinfoil                 # push config + extensions
+    pi-sync --config laptop         # just models.json and settings.json
+    pi-sync --pull --all tinfoil    # fetch the host's config back
+    """
+    groups = {
+        group
+        for group, enabled in (
+            ("config", config_ or all_),
+            ("extensions", extensions_ or all_),
+            ("auth", auth_),
+        )
+        if enabled
+    }
+    if not groups:
+        groups = {"config", "extensions"}
+    items = select_items(groups)
+
+    if auth_ and not pull:
+        click.secho(
+            "! auth.json contains API keys and will be copied to the host", fg="yellow"
+        )
+
+    agent_dir = local_agent_dir(local_dir)
+    click.echo(
+        f"{'pulling' if pull else 'pushing'} {', '.join(items)} "
+        f"{'from' if pull else 'to'} {len(targets)} host(s)\n"
+        f"local: {agent_dir}\nremote: {remote_dir}\n"
+    )
+
+    failed = False
+    for raw_target in targets:
+        target = raw_target.rstrip(":")
+        error = check_ssh(target)
+        if error:
+            failed = True
+            click.secho(f"→ {target}\n  unreachable: {error}", fg="red")
+            continue
+        if not sync_host(
+            target,
+            items,
+            agent_dir,
+            remote_dir,
+            pull=pull,
+            delete=delete_,
+            dry_run=dry_run,
+            verbose=verbose,
+            excludes=excludes,
+        ):
+            failed = True
+
+    if failed:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()
