@@ -104,8 +104,8 @@ echo 'source ~/.pi-sync-complete.bash' >> ~/.bashrc
 _PI_SYNC_COMPLETE=zsh_source pi-sync > ~/.pi-sync-complete.zsh
 echo 'source ~/.pi-sync-complete.zsh' >> ~/.zshrc
 
-# fish (config.fish)
-_PI_SYNC_COMPLETE=fish_source pi-sync | source
+# fish — fish loads any file in this directory automatically, no config edit
+_PI_SYNC_COMPLETE=fish_source pi-sync > ~/.config/fish/completions/pi-sync.fish
 ```
 
 PowerShell uses `powershell_source` the same way.

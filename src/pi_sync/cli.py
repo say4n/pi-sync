@@ -141,10 +141,8 @@ def ssh_hosts(
     return [host.name for host in ssh_config_hosts(config, _seen)]
 
 
-def complete_target(
-    ctx: click.Context, param: click.Parameter, incomplete: str
-) -> list[CompletionItem]:
-    """Complete the host part of a target from the user's ssh config."""
+def host_completions(incomplete: str) -> list[CompletionItem]:
+    """Hosts from the ssh config, for the part of the word after any user@."""
     prefix = incomplete.rpartition("@")[2]
     lead = incomplete[: len(incomplete) - len(prefix)] if prefix else incomplete
     return [
@@ -152,6 +150,13 @@ def complete_target(
         for host in ssh_config_hosts()
         if host.name.startswith(prefix)
     ]
+
+
+def complete_target(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
+    """Complete the host part of a target from the user's ssh config."""
+    return host_completions(incomplete)
 
 
 def select_items(groups: set[str]) -> list[str]:
@@ -507,6 +512,28 @@ class DefaultGroup(click.Group):
         if args and args[0] not in self.commands and args[0] != "--version":
             args = ["sync", *args]
         return super().parse_args(ctx, args)
+
+    def shell_complete(  # type: ignore[override]
+        self, ctx: click.Context, incomplete: str
+    ) -> list[CompletionItem]:
+        """Complete as if `sync` had been typed.
+
+        Without this, click completes a group by listing its subcommands, so
+        `pi-sync <TAB>` offers `sync` and `update` and every host name becomes
+        unreachable (`pi-sync tin<TAB>` matches no subcommand and returns
+        nothing). `sync` itself is left out of the suggestions because it is the
+        default: naming it is never necessary.
+        """
+        if incomplete.startswith("-"):
+            return self.commands["sync"].shell_complete(ctx, incomplete)
+        items = host_completions(incomplete)
+        if incomplete:
+            items += [
+                CompletionItem(name, help=self.commands[name].get_short_help_str())
+                for name in self.commands
+                if name != "sync" and name.startswith(incomplete)
+            ]
+        return items
 
 
 @click.group(cls=DefaultGroup, context_settings={"help_option_names": ["-h", "--help"]})

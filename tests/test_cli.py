@@ -1068,3 +1068,35 @@ class TestDirectReferenceInstalls:
         result = CliRunner().invoke(cli.app, ["update"])
         assert "9.9.9" not in result.output
         assert "no release to fetch" in result.output
+
+
+class TestGroupCompletion:
+    """The group exists only to host `update`; completion must still be about hosts."""
+
+    @staticmethod
+    def items(incomplete: str) -> list[str]:
+        ctx = click.Context(cli.app)
+        return [item.value for item in cli.app.shell_complete(ctx, incomplete)]
+
+    @pytest.fixture(autouse=True)
+    def _hosts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            cli,
+            "ssh_config_hosts",
+            lambda *a, **k: [cli.SshHost("tinfoil", "tinfoil.sayan.page"), cli.SshHost("zero")],
+        )
+
+    def test_bare_tab_offers_hosts_not_subcommands(self) -> None:
+        assert self.items("") == ["tinfoil", "zero"]
+
+    def test_partial_host_still_completes(self) -> None:
+        assert self.items("tin") == ["tinfoil"]
+
+    def test_the_default_subcommand_is_never_suggested(self) -> None:
+        assert "sync" not in self.items("sy")
+
+    def test_the_update_subcommand_is_suggested(self) -> None:
+        assert "update" in self.items("u")
+
+    def test_options_still_complete(self) -> None:
+        assert "--config" in self.items("--co")
