@@ -171,19 +171,28 @@ def install_pi(target: str) -> str | None:
     leave the user staring at a silent, unanswerable hang. Unattended, output is
     captured for the failure summary and stdin is closed so a prompt fails fast
     instead of blocking forever.
+
+    The installer's exit status is not proof of anything: its "do nothing" menu
+    choice exits 0 without installing, so the host is re-probed afterwards.
     """
     interactive = sys.stdin.isatty()
     argv = ["ssh", *(["-t"] if interactive else []), target, PI_INSTALL_CMD]
     if interactive:
         proc = run_cmd(argv, capture=False)
-        if proc.returncode == 0:
-            return None
-        return f"installer exited {proc.returncode}"
-    proc = run_cmd(argv, input_text="")
-    if proc.returncode == 0:
-        return None
-    detail = ((proc.stderr or proc.stdout) or "").strip().splitlines()
-    return detail[-1] if detail else f"installer exited {proc.returncode}"
+        failure = f"installer exited {proc.returncode}" if proc.returncode else None
+    else:
+        proc = run_cmd(argv, input_text="")
+        if proc.returncode:
+            detail = ((proc.stderr or proc.stdout) or "").strip().splitlines()
+            failure = detail[-1] if detail else f"installer exited {proc.returncode}"
+        else:
+            failure = None
+    if failure:
+        return failure
+    _, pi_path = probe_host(target)
+    if pi_path is None:
+        return "installer exited without installing pi (its menu needs 'y')"
+    return None
 
 
 def ensure_pi(target: str, assume_yes: bool, remote_dir: str) -> bool:
@@ -191,23 +200,26 @@ def ensure_pi(target: str, assume_yes: bool, remote_dir: str) -> bool:
 
     Copying into a host without pi is not useful and usually fails outright,
     since the agent directory does not exist there yet.
+
+    Interactively the installer owns the decision: it has its own
+    install/uninstall/do-nothing menu, so prompting a second time here would
+    only add a redundant question before the one that counts.
     """
-    if not assume_yes:
-        if not sys.stdin.isatty():
-            click.secho(
-                "  pi not installed — skipping (pass --install to add it)", fg="yellow"
-            )
-            return False
-        prompt = f"  pi is not installed on {target}. install it?"
-        if not click.confirm(prompt, default=False):
-            click.secho("  skipping host", fg="yellow")
-            return False
-    click.secho("  installing pi...")
+    interactive = sys.stdin.isatty()
+    if not interactive and not assume_yes:
+        click.secho(
+            "  pi not installed — skipping (pass --install to add it)", fg="yellow"
+        )
+        return False
+    if interactive:
+        click.secho("  handing over to pi's installer — the sync continues when it exits")
+    else:
+        click.secho("  running pi's installer (unattended)")
     error = install_pi(target)
     if error:
-        click.secho(f"  pi install failed: {error} — skipping host", fg="red")
+        click.secho(f"  {error} — skipping host", fg="red")
         return False
-    click.secho("  installed pi", fg="green")
+    click.secho("  pi installed; continuing with the sync", fg="green")
     # A fresh install has never run, so the agent dir may not exist yet and
     # rsync will not create intermediate directories for us.
     run_cmd(["ssh", target, f"mkdir -p {remote_dir}"])
@@ -383,9 +395,14 @@ def main(
             click.secho(f"→ {target}\n  unreachable: {error}", fg="red")
             continue
         click.secho(f"→ {target}", bold=True)
-        if pi_path is None and not ensure_pi(target, install_, remote_dir):
-            failed = True
-            continue
+        if pi_path is None:
+            if dry_run:
+                click.secho("  pi not installed — nothing would be synced", fg="yellow")
+                failed = True
+                continue
+            if not ensure_pi(target, install_, remote_dir):
+                failed = True
+                continue
         if not sync_host(
             target,
             items,

@@ -56,22 +56,30 @@ unreachable or any transfer fails.
 ## Host preflight
 
 Each host gets one ssh probe that reports reachability and pi's location in the
-same round trip. If pi is missing, pi-sync offers to install it with
-`curl -fsSL https://pi.dev/install.sh | sh`: it asks first when running
-interactively, stays quiet without a tty, and installs unattended with
-`--install`.
+same round trip.
+
+If pi is missing, pi-sync hands the terminal to pi's own installer
+(`curl -fsSL https://pi.dev/install.sh | sh`), which keeps full control: its
+prompts (its install/uninstall/do-nothing menu, a Node.js install, a sudo
+password) work normally, and the sync continues once it exits. pi-sync does not
+add a confirmation of its own, because the installer already asks. Without a
+terminal it runs unattended under `--install`, stays quiet otherwise, and
+`--dry-run` never installs anything.
+
+The installer's exit status is not treated as proof: its "do nothing" choice
+exits 0, so the host is re-probed afterwards and reported honestly.
 
 **A host without pi is skipped** — copying into a host that has never run pi is
 not useful and usually fails anyway, since there is no agent directory to copy
-into. That covers a declined prompt, a failed install, and a non-interactive run
-without `--install`; a skipped host makes the run exit non-zero. After a
-successful install pi-sync creates the agent directory, because rsync will not
-create intermediate directories on its own.
+into. That covers an installer run that installed nothing, a failed install, and
+a non-interactive run without `--install`; a skipped host makes the run exit
+non-zero. After a successful install pi-sync creates the agent directory,
+because rsync will not create intermediate directories on its own.
 
 The probe checks `command -v pi` plus the usual install locations
-(`~/.local/bin`, `~/.pi/bin`, linuxbrew, homebrew, `/usr/local/bin`), because a
-non-interactive ssh session does not source the host's shell init — on a
-linuxbrew host `command -v pi` alone misses it.
+(`~/.local/bin`, `~/.pi/bin`, `~/.pi/agent/bin`, linuxbrew, homebrew,
+`/usr/local/bin`), because a non-interactive ssh session does not source the
+host's shell init — on a linuxbrew host `command -v pi` alone misses it.
 
 ## Shell completions
 

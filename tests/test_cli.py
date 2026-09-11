@@ -28,6 +28,7 @@ class FakeRun:
         ssh_rc: int = 0,
         pi_path: str | None = "/usr/bin/pi",
         install_rc: int = 0,
+        install_installs: bool = True,
     ):
         self.calls: list[list[str]] = []
         self.inputs: list[str | None] = []
@@ -37,6 +38,8 @@ class FakeRun:
         self.ssh_rc = ssh_rc
         self.pi_path = pi_path
         self.install_rc = install_rc
+        self.install_installs = install_installs
+        self.installed = False
 
     def __call__(
         self, argv: list[str], input_text: str | None = None, capture: bool = True
@@ -49,6 +52,9 @@ class FakeRun:
                 argv, self.rsync_rc, self.rsync_stdout, ""
             )
         if any("install.sh" in arg for arg in argv):
+            if self.install_rc == 0:
+                # a real installer exits 0 even when the user picks "do nothing"
+                self.installed = self.install_installs
             stderr = "" if self.install_rc == 0 else "curl: (22) installer failed"
             return subprocess.CompletedProcess(
                 argv, self.install_rc, "installed\n", stderr
@@ -57,7 +63,8 @@ class FakeRun:
             return subprocess.CompletedProcess(
                 argv, self.ssh_rc, "", "ssh: connect failed"
             )
-        probe = f"PI:{self.pi_path}\n" if self.pi_path else ""
+        path = self.pi_path or ("/usr/local/bin/pi" if self.installed else None)
+        probe = f"PI:{path}\n" if path else ""
         return subprocess.CompletedProcess(argv, 0, probe, "")
 
 
@@ -440,17 +447,20 @@ class TestInstallOffering:
         assert not any(c[0] == "rsync" for c in fake.calls)
         assert "--install" in result.output
 
-    def test_declining_the_prompt_skips_host(
+    def test_interactive_install_needs_no_second_prompt(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The installer owns the decision; pi-sync must not pre-ask on top of it."""
         fake = FakeRun(pi_path=None)
         monkeypatch.setattr(cli, "run_cmd", fake)
         monkeypatch.setattr(sys, "stdin", _TtyStdin())
-        monkeypatch.setattr(click, "confirm", lambda *a, **k: False)
-        assert (
-            cli.ensure_pi("host", assume_yes=False, remote_dir="~/.pi/agent") is False
+        asked: list[str] = []
+        monkeypatch.setattr(
+            click, "confirm", lambda *a, **k: asked.append("confirm") or False
         )
-        assert install_calls(fake) == []
+        assert cli.ensure_pi("host", assume_yes=False, remote_dir="~/.pi/agent") is True
+        assert asked == []
+        assert len(install_calls(fake)) == 1
 
     def test_install_flag_installs_then_syncs(
         self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
@@ -463,7 +473,7 @@ class TestInstallOffering:
         assert result.exit_code == 0
         (call,) = install_calls(fake)
         assert call[-1] == cli.PI_INSTALL_CMD
-        assert "installed pi" in result.output
+        assert "pi installed" in result.output
         # a fresh install has no agent dir yet, so it is created before rsync
         assert any("mkdir -p" in arg for c in fake.calls for arg in c)
         assert any(c[0] == "rsync" for c in fake.calls)
@@ -477,7 +487,33 @@ class TestInstallOffering:
             cli.main, ["--install", "--local-dir", str(agent_dir), "host"]
         )
         assert result.exit_code == 1
-        assert "pi install failed" in result.output
+        assert "skipping host" in result.output
+        assert not any(c[0] == "rsync" for c in fake.calls)
+
+    def test_installer_that_installs_nothing_skips_host(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        """The installer exits 0 for its "do nothing" choice; that is not success."""
+        fake = FakeRun(pi_path=None, install_installs=False)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(
+            cli.main, ["--install", "--local-dir", str(agent_dir), "host"]
+        )
+        assert result.exit_code == 1
+        assert "without installing pi" in result.output
+        assert not any(c[0] == "rsync" for c in fake.calls)
+
+    def test_dry_run_never_installs_anything(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        fake = FakeRun(pi_path=None)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(
+            cli.main,
+            ["--install", "--dry-run", "--local-dir", str(agent_dir), "host"],
+        )
+        assert result.exit_code == 1
+        assert install_calls(fake) == []
         assert not any(c[0] == "rsync" for c in fake.calls)
 
     def test_interactive_install_streams_and_gets_a_tty(
@@ -490,7 +526,7 @@ class TestInstallOffering:
         assert cli.install_pi("host") is None
         (call,) = install_calls(fake)
         assert "-t" in call
-        assert fake.captures == [False]
+        assert fake.captures[0] is False  # install call streams; the re-probe captures
 
     def test_unattended_install_captures_and_closes_stdin(
         self, monkeypatch: pytest.MonkeyPatch
@@ -501,8 +537,8 @@ class TestInstallOffering:
         assert cli.install_pi("host") is None
         (call,) = install_calls(fake)
         assert "-t" not in call
-        assert fake.inputs == [""]
-        assert fake.captures == [True]
+        assert fake.inputs[0] == ""
+        assert fake.captures[0] is True
 
     def test_no_install_attempt_when_unreachable(
         self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
