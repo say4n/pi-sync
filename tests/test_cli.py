@@ -13,6 +13,7 @@ from pathlib import Path
 
 import click
 import pytest
+from click.shell_completion import CompletionItem
 from click.testing import CliRunner
 
 from pi_sync import cli
@@ -130,10 +131,31 @@ def test_select_items(groups: set[str], expected: list[str]) -> None:
 @pytest.mark.parametrize(
     ("argv_kwargs", "expected"),
     [
-        ({}, ["rsync", "-az", "-i", "/a/models.json", "host:~/.pi/agent/models.json"]),
+        (
+            {},
+            [
+                "rsync",
+                "-az",
+                "-i",
+                "--backup",
+                "--suffix=.backup",
+                "--exclude=*.backup",
+                "/a/models.json",
+                "host:~/.pi/agent/models.json",
+            ],
+        ),
         (
             {"pull": True},
-            ["rsync", "-az", "-i", "host:~/.pi/agent/models.json", "/a/models.json"],
+            [
+                "rsync",
+                "-az",
+                "-i",
+                "--backup",
+                "--suffix=.backup",
+                "--exclude=*.backup",
+                "host:~/.pi/agent/models.json",
+                "/a/models.json",
+            ],
         ),
         (
             {"dry_run": True},
@@ -141,6 +163,9 @@ def test_select_items(groups: set[str], expected: list[str]) -> None:
                 "rsync",
                 "-az",
                 "-i",
+                "--backup",
+                "--suffix=.backup",
+                "--exclude=*.backup",
                 "-n",
                 "/a/models.json",
                 "host:~/.pi/agent/models.json",
@@ -148,7 +173,16 @@ def test_select_items(groups: set[str], expected: list[str]) -> None:
         ),
         (
             {"delete": True},
-            ["rsync", "-az", "-i", "/a/models.json", "host:~/.pi/agent/models.json"],
+            [
+                "rsync",
+                "-az",
+                "-i",
+                "--backup",
+                "--suffix=.backup",
+                "--exclude=*.backup",
+                "/a/models.json",
+                "host:~/.pi/agent/models.json",
+            ],
         ),
     ],
 )
@@ -171,6 +205,20 @@ def test_rsync_argv_delete_only_for_directories() -> None:
     assert "--delete-during" not in cli.rsync_argv(
         "models.json", "host", Path("/a"), "~/.pi/agent", delete=True
     )
+
+
+def test_backups_are_taken_except_when_mirroring() -> None:
+    """Originals are kept as .backup, unless --delete means "match exactly"."""
+    plain = cli.rsync_argv("models.json", "host", Path("/a"), "~/.pi/agent")
+    assert "--backup" in plain
+    assert "--suffix=.backup" in plain
+    assert "--exclude=*.backup" in plain  # never propagate backups to other hosts
+
+    mirroring = cli.rsync_argv(
+        "extensions", "host", Path("/a"), "~/.pi/agent", delete=True
+    )
+    assert "--backup" not in mirroring
+    assert "--exclude=*.backup" in mirroring  # existing backups survive the delete
 
 
 def test_rsync_argv_excludes() -> None:
@@ -396,27 +444,48 @@ class TestSshHosts:
 
 class TestCompletion:
     @staticmethod
-    def complete(incomplete: str) -> list[str]:
+    def hosts(*names: str) -> list[cli.SshHost]:
+        return [cli.SshHost(name) for name in names]
+
+    @staticmethod
+    def items(incomplete: str) -> list[CompletionItem]:
         """Run the completion callback the way click would."""
         ctx = click.Context(cli.main)
-        items = cli.complete_target(ctx, cli.main.params[0], incomplete)
-        return [item.value for item in items]
+        return cli.complete_target(ctx, cli.main.params[0], incomplete)
+
+    def complete(self, incomplete: str) -> list[str]:
+        return [item.value for item in self.items(incomplete)]
 
     def test_completes_matching_hosts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            cli, "ssh_hosts", lambda *a, **k: ["tinfoil", "zero-frame", "phatboi"]
+            cli, "ssh_config_hosts", lambda *a, **k: self.hosts("tinfoil", "zero-frame")
         )
         assert self.complete("t") == ["tinfoil"]
 
     def test_empty_incomplete_lists_everything(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(cli, "ssh_hosts", lambda *a, **k: ["a", "b"])
+        monkeypatch.setattr(cli, "ssh_config_hosts", lambda *a, **k: self.hosts("a", "b"))
         assert self.complete("") == ["a", "b"]
 
     def test_user_at_prefix_is_preserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(cli, "ssh_hosts", lambda *a, **k: ["tinfoil", "zero-frame"])
+        monkeypatch.setattr(
+            cli, "ssh_config_hosts", lambda *a, **k: self.hosts("tinfoil", "zero-frame")
+        )
         assert self.complete("sayan@zer") == ["sayan@zero-frame"]
+
+    def test_suggestions_carry_the_real_hostname(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """zsh and fish render CompletionItem.help next to the suggestion."""
+        monkeypatch.setattr(
+            cli,
+            "ssh_config_hosts",
+            lambda *a, **k: [cli.SshHost("tinfoil", "tinfoil.sayan.page", "sayan")],
+        )
+        (item,) = self.items("t")
+        assert item.value == "tinfoil"
+        assert item.help == "sayan@tinfoil.sayan.page"
 
 
 class TestProbe:
@@ -630,3 +699,50 @@ class TestUninstall:
         assert result.exit_code == 1
         assert "unreachable" in result.output
         assert self.uninstall_calls(fake) == []
+
+
+class TestSshHostDetails:
+    def test_hostname_and_user_are_captured(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        cfg.write_text(
+            "Host tinfoil\n  HostName tinfoil.sayan.page\n  User sayan\nHost bare\n"
+        )
+        hosts = cli.ssh_config_hosts(str(cfg))
+        assert hosts == [
+            cli.SshHost("tinfoil", "tinfoil.sayan.page", "sayan"),
+            cli.SshHost("bare"),
+        ]
+        assert hosts[0].detail == "sayan@tinfoil.sayan.page"
+        assert hosts[1].detail == ""
+
+    def test_directives_bind_to_the_preceding_host(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        cfg.write_text("Host first\n  HostName one.example\nHost second\n  User bob\n")
+        hosts = cli.ssh_config_hosts(str(cfg))
+        assert [h.hostname for h in hosts] == ["one.example", None]
+        assert [h.user for h in hosts] == [None, "bob"]
+        assert hosts[1].detail == "bob"
+
+    def test_details_survive_includes(self, tmp_path: Path) -> None:
+        extra = tmp_path / "extra"
+        extra.write_text("Host orb\n  HostName orb.local\n")
+        cfg = tmp_path / "config"
+        cfg.write_text(f"Host tinfoil\n  User sayan\nInclude {extra}\n")
+        hosts = cli.ssh_config_hosts(str(cfg))
+        assert [(h.name, h.hostname, h.user) for h in hosts] == [
+            ("tinfoil", None, "sayan"),
+            ("orb", "orb.local", None),
+        ]
+
+    def test_names_still_available_as_strings(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        cfg.write_text("Host tinfoil\n  HostName tinfoil.sayan.page\n")
+        assert cli.ssh_hosts(str(cfg)) == ["tinfoil"]
+
+
+def test_version_option_reports_the_installed_version() -> None:
+    from importlib.metadata import version
+
+    result = CliRunner().invoke(cli.main, ["--version"])
+    assert result.exit_code == 0, result.output
+    assert version("pi-sync-cli") in result.output

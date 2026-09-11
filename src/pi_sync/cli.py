@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
@@ -54,10 +55,29 @@ def local_agent_dir(override: str | None = None) -> Path:
     return Path(raw).expanduser()
 
 
-def ssh_hosts(
+@dataclass(frozen=True)
+class SshHost:
+    """A host alias, plus the details worth showing in shell completions."""
+
+    name: str
+    hostname: str | None = None
+    user: str | None = None
+
+    @property
+    def detail(self) -> str:
+        if self.hostname and self.user:
+            return f"{self.user}@{self.hostname}"
+        return self.hostname or self.user or ""
+
+
+def ssh_config_hosts(
     config: str = SSH_CONFIG, _seen: frozenset[str] = frozenset()
-) -> list[str]:
-    """Host aliases from an ssh config, following Include and skipping wildcards."""
+) -> list[SshHost]:
+    """Hosts from an ssh config, following Include and skipping wildcards.
+
+    Directives bind to the Host line that precedes them, so the current block is
+    flushed when the next Host or Include appears.
+    """
     path = Path(config).expanduser()
     if not path.is_file():
         return []
@@ -65,7 +85,22 @@ def ssh_hosts(
     if resolved in _seen:
         return []
     seen = _seen | {resolved}
-    hosts: list[str] = []
+    hosts: list[SshHost] = []
+    names: set[str] = set()
+    pending: list[str] = []
+    hostname: str | None = None
+    user: str | None = None
+
+    def add(entries: list[SshHost]) -> None:
+        for entry in entries:
+            if entry.name not in names:
+                names.add(entry.name)
+                hosts.append(entry)
+
+    def flush() -> None:
+        add([SshHost(name, hostname, user) for name in pending])
+        pending.clear()
+
     for raw_line in path.read_text(errors="replace").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -75,20 +110,30 @@ def ssh_hosts(
             continue
         keyword, rest = parts[0].lower(), parts[1].strip()
         if keyword == "host":
-            for token in rest.split():
-                wildcard = "*" in token or "?" in token or token.startswith("!")
-                if not wildcard and token not in hosts:
-                    hosts.append(token)
+            flush()
+            hostname = user = None
+            pending += [t for t in rest.split() if not any(c in t for c in "*?!")]
+        elif keyword == "hostname":
+            hostname = rest.split()[0]
+        elif keyword == "user":
+            user = rest.split()[0]
         elif keyword == "include":
+            flush()
             for pattern in rest.split():
                 target = Path(pattern).expanduser()
                 if not target.is_absolute():
                     target = Path.home() / ".ssh" / target
                 for included in sorted(target.parent.glob(target.name)):
-                    hosts += [
-                        h for h in ssh_hosts(str(included), seen) if h not in hosts
-                    ]
+                    add(ssh_config_hosts(str(included), seen))
+    flush()
     return hosts
+
+
+def ssh_hosts(
+    config: str = SSH_CONFIG, _seen: frozenset[str] = frozenset()
+) -> list[str]:
+    """Host alias names from an ssh config (see ssh_config_hosts)."""
+    return [host.name for host in ssh_config_hosts(config, _seen)]
 
 
 def complete_target(
@@ -98,9 +143,9 @@ def complete_target(
     prefix = incomplete.rpartition("@")[2]
     lead = incomplete[: len(incomplete) - len(prefix)] if prefix else incomplete
     return [
-        CompletionItem(f"{lead}{host}")
-        for host in ssh_hosts()
-        if host.startswith(prefix)
+        CompletionItem(f"{lead}{host.name}", help=host.detail)
+        for host in ssh_config_hosts()
+        if host.name.startswith(prefix)
     ]
 
 
@@ -128,7 +173,14 @@ def rsync_argv(
     argv = ["rsync", "-az", "-i"]
     argv += [f"--exclude={pattern}" for pattern in excludes]
     if delete and rel in DIRECTORY_ITEMS:
+        # Mirroring wins over backups here: the destination is meant to match the
+        # source exactly, and openrsync (the rsync macOS ships) errors out when it
+        # has to back up a file it deletes.
         argv.append("--delete-during")
+    else:
+        # Keep the destination's copy of whatever we replace, as <file>.backup.
+        argv += ["--backup", "--suffix=.backup"]
+    argv.append("--exclude=*.backup")  # backups stay host-local
     if dry_run:
         argv.append("-n")
     argv += [remote, local] if pull else [local, remote]
@@ -309,6 +361,7 @@ def sync_host(
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(package_name="pi-sync-cli")
 @click.argument(
     "targets",
     nargs=-1,

@@ -126,7 +126,14 @@ without regenerating anything.
 
 - `settings.json` is machine-written by pi (`lastChangelogVersion` bumps, UI
   toggles), so two hosts pushing it will overwrite each other's local
-  preferences. Sync it when you change `packages`, not reflexively.
+  preferences. Sync it when you change `packages`, not reflexively — and note the
+  overwritten copy is kept as `settings.json.backup` on the receiving host.
+- Anything pi-sync overwrites is kept on the destination as `<name>.backup`, and
+  `*.backup` is never synced, so those copies stay host-local and never
+trampoline between hosts. `--delete` suppresses backups for the mirrored
+  directory, because mirroring means "match exactly" — which also sidesteps an
+  openrsync bug where backing up a file it deletes fails with
+  `fchownat: Operation not permitted`.
 - Extensions that write runtime files inside their own directory (logs,
   checkpoints) get those files synced too, and each host's copy is overwritten by
   whichever side pushed last — exclude them with `-x '*/logs/*'`.
