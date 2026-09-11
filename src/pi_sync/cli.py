@@ -163,21 +163,30 @@ def install_pi(target: str) -> str | None:
     return detail[-1] if detail else f"installer exited {proc.returncode}"
 
 
-def offer_install(target: str, assume_yes: bool) -> None:
-    """Install pi on a host that lacks it, asking first unless --install was given."""
+def ensure_pi(target: str, assume_yes: bool, remote_dir: str) -> bool:
+    """Make sure the host has pi. Returns False when the host must be skipped.
+
+    Copying into a host without pi is not useful and usually fails outright,
+    since the agent directory does not exist there yet.
+    """
     if not assume_yes:
         if not sys.stdin.isatty():
-            click.secho(f"  pi not installed on {target} (pass --install to add it)", fg="yellow")
-            return
+            click.secho("  pi not installed — skipping (pass --install to add it)", fg="yellow")
+            return False
         prompt = f"  pi is not installed on {target}. install it?"
         if not click.confirm(prompt, default=False):
-            return
-    click.secho(f"  installing pi on {target}...")
+            click.secho("  skipping host", fg="yellow")
+            return False
+    click.secho("  installing pi...")
     error = install_pi(target)
     if error:
-        click.secho(f"  pi install failed: {error}", fg="red")
-    else:
-        click.secho(f"  installed pi on {target}", fg="green")
+        click.secho(f"  pi install failed: {error} — skipping host", fg="red")
+        return False
+    click.secho("  installed pi", fg="green")
+    # A fresh install has never run, so the agent dir may not exist yet and
+    # rsync will not create intermediate directories for us.
+    run_cmd(["ssh", target, f"mkdir -p {remote_dir}"])
+    return True
 
 
 def sync_host(
@@ -331,8 +340,9 @@ def main(
             click.secho(f"→ {target}\n  unreachable: {error}", fg="red")
             continue
         click.secho(f"→ {target}", bold=True)
-        if pi_path is None:
-            offer_install(target, install_)
+        if pi_path is None and not ensure_pi(target, install_, remote_dir):
+            failed = True
+            continue
         if not sync_host(
             target,
             items,

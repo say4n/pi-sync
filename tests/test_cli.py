@@ -8,6 +8,7 @@ ever executed.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import click
@@ -48,6 +49,13 @@ class FakeRun:
             return subprocess.CompletedProcess(argv, self.ssh_rc, "", "ssh: connect failed")
         probe = f"PI:{self.pi_path}\n" if self.pi_path else ""
         return subprocess.CompletedProcess(argv, 0, probe, "")
+
+
+class _TtyStdin:
+    """Stand-in for an interactive terminal."""
+
+    def isatty(self) -> bool:
+        return True
 
 
 @pytest.fixture
@@ -401,16 +409,28 @@ class TestInstallOffering:
         assert result.exit_code == 0
         assert install_calls(fake) == []
 
-    def test_hint_when_not_a_tty(
+    def test_missing_pi_without_tty_skips_host(
         self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
     ) -> None:
         fake = FakeRun(pi_path=None)
         monkeypatch.setattr(cli, "run_cmd", fake)
         result = CliRunner().invoke(cli.main, ["--local-dir", str(agent_dir), "host"])
+        assert result.exit_code == 1
         assert install_calls(fake) == []
+        assert not any(c[0] == "rsync" for c in fake.calls)
         assert "--install" in result.output
 
-    def test_install_flag_installs(self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path) -> None:
+    def test_declining_the_prompt_skips_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = FakeRun(pi_path=None)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        monkeypatch.setattr(sys, "stdin", _TtyStdin())
+        monkeypatch.setattr(click, "confirm", lambda *a, **k: False)
+        assert cli.ensure_pi("host", assume_yes=False, remote_dir="~/.pi/agent") is False
+        assert install_calls(fake) == []
+
+    def test_install_flag_installs_then_syncs(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
         fake = FakeRun(pi_path=None)
         monkeypatch.setattr(cli, "run_cmd", fake)
         result = CliRunner().invoke(
@@ -419,9 +439,12 @@ class TestInstallOffering:
         assert result.exit_code == 0
         (call,) = install_calls(fake)
         assert call[-1] == cli.PI_INSTALL_CMD
-        assert "installed pi on host" in result.output
+        assert "installed pi" in result.output
+        # a fresh install has no agent dir yet, so it is created before rsync
+        assert any("mkdir -p" in arg for c in fake.calls for arg in c)
+        assert any(c[0] == "rsync" for c in fake.calls)
 
-    def test_install_failure_is_reported_but_sync_continues(
+    def test_install_failure_skips_host(
         self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
     ) -> None:
         fake = FakeRun(pi_path=None, install_rc=22)
@@ -429,8 +452,9 @@ class TestInstallOffering:
         result = CliRunner().invoke(
             cli.main, ["--install", "--local-dir", str(agent_dir), "host"]
         )
+        assert result.exit_code == 1
         assert "pi install failed" in result.output
-        assert any(c[0] == "rsync" for c in fake.calls)
+        assert not any(c[0] == "rsync" for c in fake.calls)
 
     def test_no_install_attempt_when_unreachable(
         self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path

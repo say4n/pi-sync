@@ -59,8 +59,14 @@ Each host gets one ssh probe that reports reachability and pi's location in the
 same round trip. If pi is missing, pi-sync offers to install it with
 `curl -fsSL https://pi.dev/install.sh | sh`: it asks first when running
 interactively, stays quiet without a tty, and installs unattended with
-`--install`. A failed install is reported but does not abort the sync, since
-copying config does not require pi on the host.
+`--install`.
+
+**A host without pi is skipped** — copying into a host that has never run pi is
+not useful and usually fails anyway, since there is no agent directory to copy
+into. That covers a declined prompt, a failed install, and a non-interactive run
+without `--install`; a skipped host makes the run exit non-zero. After a
+successful install pi-sync creates the agent directory, because rsync will not
+create intermediate directories on its own.
 
 The probe checks `command -v pi` plus the usual install locations
 (`~/.local/bin`, `~/.pi/bin`, linuxbrew, homebrew, `/usr/local/bin`), because a
