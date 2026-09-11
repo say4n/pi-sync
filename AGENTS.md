@@ -64,6 +64,14 @@ uv run pi-sync --help
 Kept out of the README: these describe *using* pi-sync rather than changing
 it, and are collected here so the README stays a short front page.
 
+## Hosts without pi
+
+Each host is checked before syncing. If pi is missing, pi-sync offers to install
+it — interactively, pi's installer takes over your terminal, and the sync
+continues when it exits. `--install` does that unattended.
+
+A host that still has no pi afterwards is skipped, and the run exits non-zero.
+
 ## Updating
 
 - `pi-sync update` upgrades pi-sync itself, through whichever installer owns it
