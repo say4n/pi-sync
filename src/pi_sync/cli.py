@@ -496,9 +496,7 @@ class DefaultGroup(click.Group):
         return super().parse_args(ctx, args)
 
 
-@click.group(
-    cls=DefaultGroup, context_settings={"help_option_names": ["-h", "--help"]}
-)
+@click.group(cls=DefaultGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(package_name="pi-sync-cli")
 def app() -> None:
     """Sync pi agent config across hosts, and manage pi itself."""
@@ -516,7 +514,9 @@ def update_cmd(check: bool) -> None:
     install = running_install()
     click.echo(f"pi-sync {install.version}  ({install.kind})")
     if install.kind == "editable":
-        click.echo(f"running from a checkout; update it with:\n  git -C {install.detail} pull")
+        click.echo(
+            f"running from a checkout; update it with:\n  git -C {install.detail} pull"
+        )
         return
     if install.kind == "ephemeral":
         click.echo(

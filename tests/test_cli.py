@@ -753,9 +753,7 @@ def test_version_option_reports_the_installed_version() -> None:
 class TestGroupFallback:
     """`pi-sync update` and `pi-sync <hosts>` must both work."""
 
-    def test_hosts_still_route_to_sync(
-        self, fake: FakeRun, agent_dir: Path
-    ) -> None:
+    def test_hosts_still_route_to_sync(self, fake: FakeRun, agent_dir: Path) -> None:
         result = CliRunner().invoke(
             cli.app, ["--config", "--local-dir", str(agent_dir), "host"]
         )
@@ -763,9 +761,7 @@ class TestGroupFallback:
         assert any(c[0] == "rsync" for c in fake.calls)
 
     def test_bare_host_routes_to_sync(self, fake: FakeRun, agent_dir: Path) -> None:
-        result = CliRunner().invoke(
-            cli.app, ["--local-dir", str(agent_dir), "host"]
-        )
+        result = CliRunner().invoke(cli.app, ["--local-dir", str(agent_dir), "host"])
         assert result.exit_code == 0, result.output
         assert any(c[0] == "rsync" for c in fake.calls)
 
@@ -784,7 +780,9 @@ class TestGroupFallback:
         monkeypatch.setattr(
             cli,
             "running_install",
-            lambda: cli.Install("pi-sync-cli", "0.4.0", "ephemeral", "/prefix/ephemeral"),
+            lambda: cli.Install(
+                "pi-sync-cli", "0.4.0", "ephemeral", "/prefix/ephemeral"
+            ),
         )
         result = CliRunner().invoke(cli.app, ["update"])
         assert result.exit_code == 0, result.output
@@ -805,7 +803,9 @@ class TestUpdate:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            cli, "running_install", lambda: self.install("editable", detail="/opt/checkout")
+            cli,
+            "running_install",
+            lambda: self.install("editable", detail="/opt/checkout"),
         )
         result = CliRunner().invoke(cli.app, ["update"])
         assert result.exit_code == 0, result.output
@@ -906,12 +906,16 @@ class TestUpdate:
             ("1.0.0rc1", "1.0.0", False),
         ],
     )
-    def test_version_comparison(self, latest: str, current: str, expected: bool) -> None:
+    def test_version_comparison(
+        self, latest: str, current: str, expected: bool
+    ) -> None:
         assert (cli.version_tuple(latest) > cli.version_tuple(current)) is expected
 
 
 class TestUpdatePi:
-    def test_reports_the_version_change(self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path) -> None:
+    def test_reports_the_version_change(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
         monkeypatch.setattr(cli, "run_cmd", FakeRun(pi_path="/usr/bin/pi"))
         versions = iter(["0.85.1", "0.86.0"])
         monkeypatch.setattr(cli, "pi_version_on", lambda target: next(versions))
@@ -922,12 +926,16 @@ class TestUpdatePi:
         assert result.exit_code == 0, result.output
         assert "pi 0.85.1 → 0.86.0" in result.output
 
-    def test_updates_before_syncing(self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path) -> None:
+    def test_updates_before_syncing(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
         fake = FakeRun(pi_path="/usr/bin/pi")
         monkeypatch.setattr(cli, "run_cmd", fake)
         monkeypatch.setattr(cli, "pi_version_on", lambda target: "0.85.1")
         monkeypatch.setattr(cli, "update_pi_on", lambda target: None)
-        CliRunner().invoke(cli.main, ["--update-pi", "--local-dir", str(agent_dir), "host"])
+        CliRunner().invoke(
+            cli.main, ["--update-pi", "--local-dir", str(agent_dir), "host"]
+        )
         assert any(c[0] == "rsync" for c in fake.calls)
 
     def test_failure_is_reported_and_fails_the_run(
@@ -942,12 +950,15 @@ class TestUpdatePi:
         assert result.exit_code == 1
         assert "pi update failed: npm ERR! boom" in result.output
 
-    def test_dry_run_only_reports(self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path) -> None:
+    def test_dry_run_only_reports(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
         monkeypatch.setattr(cli, "run_cmd", FakeRun(pi_path="/usr/bin/pi"))
         called: list[str] = []
         monkeypatch.setattr(cli, "update_pi_on", lambda target: called.append(target))
         result = CliRunner().invoke(
-            cli.main, ["--update-pi", "--dry-run", "--local-dir", str(agent_dir), "host"]
+            cli.main,
+            ["--update-pi", "--dry-run", "--local-dir", str(agent_dir), "host"],
         )
         assert "would run: pi update --self" in result.output
         assert called == []
@@ -965,7 +976,10 @@ class TestInstallDetection:
 
     def test_pip_editable_payload_with_spaces(self) -> None:
         payload = '{"url": "file:///scratch/checkout", "dir_info": {"editable": true}}'
-        assert cli.install_kind(payload, "/x/.venv") == ("editable", "/scratch/checkout")
+        assert cli.install_kind(payload, "/x/.venv") == (
+            "editable",
+            "/scratch/checkout",
+        )
 
     def test_pipx_prefix(self) -> None:
         kind, detail = cli.install_kind("", "/home/x/.local/pipx/venvs/pi-sync-cli")
@@ -976,7 +990,9 @@ class TestInstallDetection:
         assert cli.install_kind("", prefix)[0] == "uv-tool"
 
     def test_uvx_ephemeral_prefix(self) -> None:
-        assert cli.install_kind("", "/Users/x/.cache/uv/archive-v0/abc")[0] == "ephemeral"
+        assert (
+            cli.install_kind("", "/Users/x/.cache/uv/archive-v0/abc")[0] == "ephemeral"
+        )
 
     def test_plain_venv_is_pip(self) -> None:
         assert cli.install_kind("", "/Users/x/project/.venv")[0] == "pip"
@@ -986,7 +1002,10 @@ class TestInstallDetection:
 
     def test_editable_wins_over_prefix(self) -> None:
         payload = '{"url":"file:///scratch/checkout","dir_info":{"editable":true}}'
-        assert cli.install_kind(payload, "/x/.local/pipx/venvs/pi-sync-cli")[0] == "editable"
+        assert (
+            cli.install_kind(payload, "/x/.local/pipx/venvs/pi-sync-cli")[0]
+            == "editable"
+        )
 
 
 def test_help_usage_reads_as_the_program_not_the_subcommand() -> None:
