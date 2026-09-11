@@ -30,7 +30,7 @@ found="$(command -v pi 2>/dev/null)"
 if [ -z "$found" ]; then
   for candidate in "$HOME/.local/bin/pi" "$HOME/.pi/bin/pi" \\
       "$HOME/.linuxbrew/bin/pi" /home/linuxbrew/.linuxbrew/bin/pi \\
-      /opt/homebrew/bin/pi /usr/local/bin/pi; do
+      "$HOME/.pi/agent/bin/pi" /opt/homebrew/bin/pi /usr/local/bin/pi; do
     if [ -x "$candidate" ]; then found="$candidate"; break; fi
   done
 fi
@@ -135,9 +135,9 @@ def rsync_argv(
 
 
 def run_cmd(
-    argv: list[str], input_text: str | None = None
+    argv: list[str], input_text: str | None = None, capture: bool = True
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, input=input_text)
+    return subprocess.run(argv, capture_output=capture, text=True, input=input_text)
 
 
 def summarize(output: str) -> tuple[int, int]:
@@ -164,12 +164,25 @@ def probe_host(target: str) -> tuple[str | None, str | None]:
 
 
 def install_pi(target: str) -> str | None:
-    """Run pi's installer on the host. Returns an error message, or None."""
-    argv = ["ssh", *(["-t"] if sys.stdin.isatty() else []), target, PI_INSTALL_CMD]
-    proc = run_cmd(argv)
+    """Run pi's installer on the host. Returns an error message, or None on success.
+
+    Attached to a terminal the installer streams straight through and gets a
+    remote tty, so its prompts are visible and answerable: capturing them would
+    leave the user staring at a silent, unanswerable hang. Unattended, output is
+    captured for the failure summary and stdin is closed so a prompt fails fast
+    instead of blocking forever.
+    """
+    interactive = sys.stdin.isatty()
+    argv = ["ssh", *(["-t"] if interactive else []), target, PI_INSTALL_CMD]
+    if interactive:
+        proc = run_cmd(argv, capture=False)
+        if proc.returncode == 0:
+            return None
+        return f"installer exited {proc.returncode}"
+    proc = run_cmd(argv, input_text="")
     if proc.returncode == 0:
         return None
-    detail = (proc.stderr or proc.stdout).strip().splitlines()
+    detail = ((proc.stderr or proc.stdout) or "").strip().splitlines()
     return detail[-1] if detail else f"installer exited {proc.returncode}"
 
 

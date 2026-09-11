@@ -31,6 +31,7 @@ class FakeRun:
     ):
         self.calls: list[list[str]] = []
         self.inputs: list[str | None] = []
+        self.captures: list[bool] = []
         self.rsync_stdout = rsync_stdout
         self.rsync_rc = rsync_rc
         self.ssh_rc = ssh_rc
@@ -38,10 +39,11 @@ class FakeRun:
         self.install_rc = install_rc
 
     def __call__(
-        self, argv: list[str], input_text: str | None = None
+        self, argv: list[str], input_text: str | None = None, capture: bool = True
     ) -> subprocess.CompletedProcess[str]:
         self.calls.append(argv)
         self.inputs.append(input_text)
+        self.captures.append(capture)
         if argv[0] != "ssh":
             return subprocess.CompletedProcess(
                 argv, self.rsync_rc, self.rsync_stdout, ""
@@ -477,6 +479,30 @@ class TestInstallOffering:
         assert result.exit_code == 1
         assert "pi install failed" in result.output
         assert not any(c[0] == "rsync" for c in fake.calls)
+
+    def test_interactive_install_streams_and_gets_a_tty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The installer prompts on /dev/tty, so its output must not be captured."""
+        fake = FakeRun()
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        monkeypatch.setattr(sys, "stdin", _TtyStdin())
+        assert cli.install_pi("host") is None
+        (call,) = install_calls(fake)
+        assert "-t" in call
+        assert fake.captures == [False]
+
+    def test_unattended_install_captures_and_closes_stdin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a terminal the installer gets EOF instead of blocking on a prompt."""
+        fake = FakeRun()
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        assert cli.install_pi("host") is None
+        (call,) = install_calls(fake)
+        assert "-t" not in call
+        assert fake.inputs == [""]
+        assert fake.captures == [True]
 
     def test_no_install_attempt_when_unreachable(
         self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
