@@ -435,7 +435,9 @@ def main(
                 continue
             prefix = Path(pi_path).parent.parent
             if dry_run:
-                click.secho(f"  would run: npm uninstall -g --prefix {prefix} {PI_PACKAGE}")
+                click.secho(
+                    f"  would run: npm uninstall -g --prefix {prefix} {PI_PACKAGE}"
+                )
                 continue
             click.secho(f"  uninstalling pi from {pi_path}...")
             error = uninstall_pi(target, pi_path)
@@ -443,7 +445,8 @@ def main(
                 failed = True
                 click.secho(f"  {error}", fg="red")
                 click.secho(
-                    "  for a managed install, run the installer and choose 'u'", fg="yellow"
+                    "  for a managed install, run the installer and choose 'u'",
+                    fg="yellow",
                 )
             else:
                 click.secho("  pi uninstalled — ~/.pi/agent was left alone", fg="green")
