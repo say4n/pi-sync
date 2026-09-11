@@ -212,7 +212,9 @@ def ensure_pi(target: str, assume_yes: bool, remote_dir: str) -> bool:
         )
         return False
     if interactive:
-        click.secho("  handing over to pi's installer — the sync continues when it exits")
+        click.secho(
+            "  handing over to pi's installer — the sync continues when it exits"
+        )
     else:
         click.secho("  running pi's installer (unattended)")
     error = install_pi(target)
