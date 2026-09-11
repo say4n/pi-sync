@@ -12,12 +12,17 @@ is deliberately never touched.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 import click
 from click.shell_completion import CompletionItem
@@ -360,8 +365,192 @@ def sync_host(
     return ok
 
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+PYPI_JSON = "https://pypi.org/pypi/{dist}/json"
+EPHEMERAL_MARKERS = ("/uv/archive-", "/uv/environments-")
+
+
+@dataclass(frozen=True)
+class Install:
+    """How the running copy of pi-sync got onto this machine."""
+
+    dist: str
+    version: str
+    kind: str
+    detail: str = ""
+
+
+def install_kind(direct_url: str, prefix: str) -> tuple[str, str]:
+    """Classify an environment from its PEP 610 payload and its prefix.
+
+    The payload is parsed rather than pattern-matched: uv and pip disagree about
+    whitespace in `direct_url.json`, so a substring test silently misses one.
+    """
+    try:
+        info = json.loads(direct_url) if direct_url else {}
+    except ValueError:
+        info = {}
+    if not isinstance(info, dict):
+        info = {}
+    dir_info = info.get("dir_info")
+    if isinstance(dir_info, dict) and dir_info.get("editable"):
+        return "editable", str(info.get("url", "")).removeprefix("file://")
+    if "/pipx/venvs/" in prefix:
+        return "pipx", prefix
+    if "/uv/tools/" in prefix:
+        return "uv-tool", prefix
+    if any(marker in prefix for marker in EPHEMERAL_MARKERS):
+        return "ephemeral", prefix
+    return "pip", prefix
+
+
+def running_install() -> Install:
+    """Identify the install we are running *from*, not the one merely on PATH.
+
+    Two installs of this tool can coexist (an older distribution name and the
+    current one), so the distribution is resolved from this process's own
+    environment: a hardcoded package name would happily upgrade somebody else's
+    virtualenv, or none at all.
+    """
+    found = metadata.packages_distributions().get("pi_sync") or ["pi-sync-cli"]
+    dist = metadata.distribution(found[0])
+    kind, detail = install_kind(dist.read_text("direct_url.json") or "", sys.prefix)
+    return Install(dist.metadata["Name"], dist.version, kind, detail)
+
+
+def upgrade_argv(install: Install) -> list[str] | None:
+    """The command that upgrades this install, or None when it is not managed."""
+    if install.kind == "pipx":
+        return ["pipx", "upgrade", install.dist]
+    if install.kind == "uv-tool":
+        return ["uv", "tool", "upgrade", install.dist]
+    if install.kind == "pip":
+        return [sys.executable, "-m", "pip", "install", "--upgrade", install.dist]
+    return None
+
+
+def latest_version(dist: str) -> str | None:
+    """Newest release on PyPI, or None when it cannot be determined."""
+    url = PYPI_JSON.format(dist=dist)
+    if urlparse(url).scheme != "https":  # never fetch over anything else
+        return None
+    try:
+        with urlopen(url, timeout=10) as response:  # noqa: S310 - scheme checked
+            return json.load(response)["info"]["version"]
+    except Exception:  # offline, renamed project, unexpected payload
+        return None
+
+
+def version_tuple(value: str) -> tuple[int, ...]:
+    """The leading numeric release, ignoring any pre-release suffix."""
+    match = re.match(r"\d+(?:\.\d+)*", value.strip())
+    if not match:
+        return ()
+    try:
+        return tuple(int(part) for part in match.group(0).split("."))
+    except ValueError:  # unreachable: the pattern only matches digits
+        return ()
+
+
+def pi_version_on(target: str) -> str | None:
+    """The host's pi version, or None when it cannot be read."""
+    proc = run_cmd(["ssh", target, "pi --version"])
+    text = (proc.stdout or "").strip()
+    return text if proc.returncode == 0 and text else None
+
+
+def update_pi_on(target: str) -> str | None:
+    """Run pi's own updater on the host. Returns an error message, or None."""
+    proc = run_cmd(["ssh", target, "pi update --self"])
+    if proc.returncode == 0:
+        return None
+    detail = ((proc.stderr or proc.stdout) or "").strip().splitlines()
+    return detail[-1] if detail else f"pi update exited {proc.returncode}"
+
+
+class SyncCommand(click.Command):
+    """`sync` is the default command, so its usage should not read `pi-sync sync`."""
+
+    def format_usage(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        pieces = " ".join(self.collect_usage_pieces(ctx))
+        program = ctx.find_root().info_name or "pi-sync"
+        formatter.write_usage(program, pieces, prefix=None)
+
+
+class DefaultGroup(click.Group):
+    """Group that treats the absence of a subcommand as `sync`.
+
+    This keeps `pi-sync host`, `pi-sync --config host` and `pi-sync update` all
+    working. The cost is that "update" is now a reserved word: a host with that
+    alias has to be reached as `user@update` or by renaming the alias.
+
+    The prepend happens before click parses the group's options, because that
+    parser rejects sync's flags (`No such option: --config`) long before
+    command resolution would get a chance to fall back.
+    """
+
+    def parse_args(  # type: ignore[override]
+        self, ctx: click.Context, args: list[str]
+    ) -> list[str]:
+        if args and args[0] not in self.commands and args[0] != "--version":
+            args = ["sync", *args]
+        return super().parse_args(ctx, args)
+
+
+@click.group(
+    cls=DefaultGroup, context_settings={"help_option_names": ["-h", "--help"]}
+)
 @click.version_option(package_name="pi-sync-cli")
+def app() -> None:
+    """Sync pi agent config across hosts, and manage pi itself."""
+
+
+@app.command("update", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option("--check", is_flag=True, help="Report what would happen; change nothing.")
+def update_cmd(check: bool) -> None:
+    """Update pi-sync itself to the latest release.
+
+    \b
+    pi-sync update           # upgrades via pipx, uv, or pip — whichever installed it
+    pi-sync update --check   # just report
+    """
+    install = running_install()
+    click.echo(f"pi-sync {install.version}  ({install.kind})")
+    if install.kind == "editable":
+        click.echo(f"running from a checkout; update it with:\n  git -C {install.detail} pull")
+        return
+    if install.kind == "ephemeral":
+        click.echo(
+            "running from an ephemeral uvx environment — nothing to update.\n"
+            "for a durable install: uv tool install pi-sync-cli"
+        )
+        return
+    argv = upgrade_argv(install)
+    if argv is None:  # pragma: no cover - every kind above is handled earlier
+        click.secho("do not know how this copy was installed", fg="red")
+        raise SystemExit(1)
+    latest = latest_version(install.dist)
+    if latest is None:
+        click.secho(f"could not reach PyPI for {install.dist}", fg="red")
+        raise SystemExit(1)
+    if version_tuple(latest) <= version_tuple(install.version):
+        click.secho(f"already up to date (latest is {latest})", fg="green")
+        return
+    if check:
+        click.echo(f"would run: {' '.join(argv)}\n{install.version} → {latest}")
+        return
+    click.echo(f"upgrading {install.version} → {latest}...")
+    proc = run_cmd(argv, capture=False)  # streamed: pipx/uv show their own progress
+    if proc.returncode:
+        click.secho(f"upgrade failed (exit {proc.returncode})", fg="red")
+        raise SystemExit(1)
+    click.secho(f"pi-sync {latest} installed", fg="green")
+
+
+@app.command(
+    "sync",
+    cls=SyncCommand,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 @click.argument(
     "targets",
     nargs=-1,
@@ -412,6 +601,12 @@ def sync_host(
     help="Uninstall pi from the host instead of syncing (keeps ~/.pi/agent).",
 )
 @click.option(
+    "--update-pi",
+    "update_pi",
+    is_flag=True,
+    help="Update pi on each host before syncing.",
+)
+@click.option(
     "--local-dir",
     default=None,
     help="Local agent dir (default: $PI_CODING_AGENT_DIR or ~/.pi/agent).",
@@ -437,6 +632,7 @@ def main(
     excludes: tuple[str, ...],
     install_: bool,
     uninstall_: bool,
+    update_pi: bool,
     local_dir: str | None,
     remote_dir: str,
     verbose: bool,
@@ -447,6 +643,7 @@ def main(
     pi-sync tinfoil                 # push config + extensions
     pi-sync --config laptop         # just models.json and settings.json
     pi-sync --pull --all tinfoil    # fetch the host's config back
+    pi-sync update                  # update pi-sync itself
     """
     groups = {
         group
@@ -512,6 +709,20 @@ def main(
             if not ensure_pi(target, install_, remote_dir):
                 failed = True
                 continue
+        if update_pi:
+            if dry_run:
+                click.secho("  would run: pi update --self")
+            else:
+                before = pi_version_on(target)
+                error = update_pi_on(target)
+                after = pi_version_on(target)
+                if error:
+                    failed = True
+                    click.secho(f"  pi update failed: {error}", fg="red")
+                elif before and after and before != after:
+                    click.secho(f"  pi {before} → {after}", fg="green")
+                else:
+                    click.secho(f"  pi {after or 'unknown'} (already current)")
         if not sync_host(
             target,
             items,
@@ -530,4 +741,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main()
+    app()

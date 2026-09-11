@@ -20,7 +20,7 @@ Repository = "https://github.com/say4n/pi-sync"
 Issues = "https://github.com/say4n/pi-sync/issues"
 
 [project.scripts]
-pi-sync = "pi_sync.cli:main"
+pi-sync = "pi_sync.cli:app"
 
 [dependency-groups]
 dev = ["pytest>=8"]

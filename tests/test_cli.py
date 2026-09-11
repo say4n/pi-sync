@@ -745,6 +745,251 @@ class TestSshHostDetails:
 def test_version_option_reports_the_installed_version() -> None:
     from importlib.metadata import version
 
-    result = CliRunner().invoke(cli.main, ["--version"])
+    result = CliRunner().invoke(cli.app, ["--version"])
     assert result.exit_code == 0, result.output
     assert version("pi-sync-cli") in result.output
+
+
+class TestGroupFallback:
+    """`pi-sync update` and `pi-sync <hosts>` must both work."""
+
+    def test_hosts_still_route_to_sync(
+        self, fake: FakeRun, agent_dir: Path
+    ) -> None:
+        result = CliRunner().invoke(
+            cli.app, ["--config", "--local-dir", str(agent_dir), "host"]
+        )
+        assert result.exit_code == 0, result.output
+        assert any(c[0] == "rsync" for c in fake.calls)
+
+    def test_bare_host_routes_to_sync(self, fake: FakeRun, agent_dir: Path) -> None:
+        result = CliRunner().invoke(
+            cli.app, ["--local-dir", str(agent_dir), "host"]
+        )
+        assert result.exit_code == 0, result.output
+        assert any(c[0] == "rsync" for c in fake.calls)
+
+    def test_help_shows_sync_options_not_just_subcommands(self) -> None:
+        result = CliRunner().invoke(cli.app, ["--help"])
+        assert "[USER@]HOST" in result.output
+
+    def test_version_is_answered_by_the_group(self) -> None:
+        result = CliRunner().invoke(cli.app, ["--version"])
+        assert result.exit_code == 0, result.output
+        assert "version" in result.output
+
+    def test_update_is_not_swallowed_by_the_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            cli,
+            "running_install",
+            lambda: cli.Install("pi-sync-cli", "0.4.0", "ephemeral", "/prefix/ephemeral"),
+        )
+        result = CliRunner().invoke(cli.app, ["update"])
+        assert result.exit_code == 0, result.output
+        assert "ephemeral" in result.output
+
+
+class TestUpdate:
+    @staticmethod
+    def install(
+        kind: str,
+        version: str = "0.4.0",
+        dist: str = "pi-sync-cli",
+        detail: str | None = None,
+    ) -> cli.Install:
+        return cli.Install(dist, version, kind, detail or f"/prefix/{kind}")
+
+    def test_editable_checkout_points_at_git(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            cli, "running_install", lambda: self.install("editable", detail="/opt/checkout")
+        )
+        result = CliRunner().invoke(cli.app, ["update"])
+        assert result.exit_code == 0, result.output
+        assert "git -C /opt/checkout pull" in result.output
+
+    def test_ephemeral_run_suggests_a_durable_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli, "running_install", lambda: self.install("ephemeral"))
+        result = CliRunner().invoke(cli.app, ["update"])
+        assert result.exit_code == 0
+        assert "uv tool install pi-sync-cli" in result.output
+
+    def test_pipx_install_upgrades_through_pipx(
+        self, fake: FakeRun, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli, "running_install", lambda: self.install("pipx"))
+        monkeypatch.setattr(cli, "latest_version", lambda dist: "0.5.0")
+        result = CliRunner().invoke(cli.app, ["update"])
+        assert result.exit_code == 0, result.output
+        assert ["pipx", "upgrade", "pi-sync-cli"] in fake.calls
+        assert "0.5.0 installed" in result.output
+
+    def test_uv_tool_install_upgrades_through_uv(
+        self, fake: FakeRun, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli, "running_install", lambda: self.install("uv-tool"))
+        monkeypatch.setattr(cli, "latest_version", lambda dist: "0.5.0")
+        CliRunner().invoke(cli.app, ["update"])
+        assert ["uv", "tool", "upgrade", "pi-sync-cli"] in fake.calls
+
+    def test_old_distribution_name_is_used_as_is(
+        self, fake: FakeRun, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A copy installed under the pre-rename name upgrades *that* package."""
+        monkeypatch.setattr(
+            cli, "running_install", lambda: self.install("pipx", dist="pi-sync")
+        )
+        monkeypatch.setattr(cli, "latest_version", lambda dist: "0.5.0")
+        CliRunner().invoke(cli.app, ["update"])
+        assert ["pipx", "upgrade", "pi-sync"] in fake.calls
+
+    def test_already_current_does_not_upgrade(
+        self, fake: FakeRun, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli, "running_install", lambda: self.install("pipx"))
+        monkeypatch.setattr(cli, "latest_version", lambda dist: "0.4.0")
+        result = CliRunner().invoke(cli.app, ["update"])
+        assert result.exit_code == 0
+        assert "already up to date" in result.output
+        assert not any(c[0] in ("pipx", "uv") for c in fake.calls)
+
+    def test_newer_local_than_pypi_is_not_a_downgrade(
+        self, fake: FakeRun, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            cli, "running_install", lambda: self.install("pipx", version="0.9.0")
+        )
+        monkeypatch.setattr(cli, "latest_version", lambda dist: "0.4.0")
+        CliRunner().invoke(cli.app, ["update"])
+        assert not any(c[0] in ("pipx", "uv") for c in fake.calls)
+
+    def test_check_reports_without_upgrading(
+        self, fake: FakeRun, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli, "running_install", lambda: self.install("pipx"))
+        monkeypatch.setattr(cli, "latest_version", lambda dist: "0.5.0")
+        result = CliRunner().invoke(cli.app, ["update", "--check"])
+        assert "would run: pipx upgrade pi-sync-cli" in result.output
+        assert not any(c[0] == "pipx" for c in fake.calls)
+
+    def test_unreachable_pypi_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli, "running_install", lambda: self.install("pipx"))
+        monkeypatch.setattr(cli, "latest_version", lambda dist: None)
+        result = CliRunner().invoke(cli.app, ["update"])
+        assert result.exit_code == 1
+        assert "could not reach PyPI" in result.output
+
+    def test_failed_upgrade_exits_nonzero(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cli, "running_install", lambda: self.install("pipx"))
+        monkeypatch.setattr(cli, "latest_version", lambda dist: "0.5.0")
+        monkeypatch.setattr(cli, "run_cmd", FakeRun(rsync_rc=1))
+        result = CliRunner().invoke(cli.app, ["update"])
+        assert result.exit_code == 1
+        assert "upgrade failed" in result.output
+
+    @pytest.mark.parametrize(
+        ("latest", "current", "expected"),
+        [
+            ("0.4.0", "0.4.0", False),
+            ("0.5.0", "0.4.0", True),
+            ("0.10.0", "0.9.0", True),
+            ("0.4.0", "0.5.0", False),
+            ("1.0.0rc1", "1.0.0", False),
+        ],
+    )
+    def test_version_comparison(self, latest: str, current: str, expected: bool) -> None:
+        assert (cli.version_tuple(latest) > cli.version_tuple(current)) is expected
+
+
+class TestUpdatePi:
+    def test_reports_the_version_change(self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path) -> None:
+        monkeypatch.setattr(cli, "run_cmd", FakeRun(pi_path="/usr/bin/pi"))
+        versions = iter(["0.85.1", "0.86.0"])
+        monkeypatch.setattr(cli, "pi_version_on", lambda target: next(versions))
+        monkeypatch.setattr(cli, "update_pi_on", lambda target: None)
+        result = CliRunner().invoke(
+            cli.main, ["--update-pi", "--local-dir", str(agent_dir), "host"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "pi 0.85.1 → 0.86.0" in result.output
+
+    def test_updates_before_syncing(self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path) -> None:
+        fake = FakeRun(pi_path="/usr/bin/pi")
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        monkeypatch.setattr(cli, "pi_version_on", lambda target: "0.85.1")
+        monkeypatch.setattr(cli, "update_pi_on", lambda target: None)
+        CliRunner().invoke(cli.main, ["--update-pi", "--local-dir", str(agent_dir), "host"])
+        assert any(c[0] == "rsync" for c in fake.calls)
+
+    def test_failure_is_reported_and_fails_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        monkeypatch.setattr(cli, "run_cmd", FakeRun(pi_path="/usr/bin/pi"))
+        monkeypatch.setattr(cli, "pi_version_on", lambda target: "0.85.1")
+        monkeypatch.setattr(cli, "update_pi_on", lambda target: "npm ERR! boom")
+        result = CliRunner().invoke(
+            cli.main, ["--update-pi", "--local-dir", str(agent_dir), "host"]
+        )
+        assert result.exit_code == 1
+        assert "pi update failed: npm ERR! boom" in result.output
+
+    def test_dry_run_only_reports(self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path) -> None:
+        monkeypatch.setattr(cli, "run_cmd", FakeRun(pi_path="/usr/bin/pi"))
+        called: list[str] = []
+        monkeypatch.setattr(cli, "update_pi_on", lambda target: called.append(target))
+        result = CliRunner().invoke(
+            cli.main, ["--update-pi", "--dry-run", "--local-dir", str(agent_dir), "host"]
+        )
+        assert "would run: pi update --self" in result.output
+        assert called == []
+
+
+class TestInstallDetection:
+    """Installers disagree on direct_url.json whitespace; both must be understood."""
+
+    def test_uv_editable_payload(self) -> None:
+        payload = '{"url":"file:///Users/x/pi-sync","dir_info":{"editable":true}}'
+        assert cli.install_kind(payload, "/Users/x/pi-sync/.venv") == (
+            "editable",
+            "/Users/x/pi-sync",
+        )
+
+    def test_pip_editable_payload_with_spaces(self) -> None:
+        payload = '{"url": "file:///scratch/checkout", "dir_info": {"editable": true}}'
+        assert cli.install_kind(payload, "/x/.venv") == ("editable", "/scratch/checkout")
+
+    def test_pipx_prefix(self) -> None:
+        kind, detail = cli.install_kind("", "/home/x/.local/pipx/venvs/pi-sync-cli")
+        assert (kind, detail) == ("pipx", "/home/x/.local/pipx/venvs/pi-sync-cli")
+
+    def test_uv_tool_prefix(self) -> None:
+        prefix = "/home/x/.local/share/uv/tools/pi-sync-cli"
+        assert cli.install_kind("", prefix)[0] == "uv-tool"
+
+    def test_uvx_ephemeral_prefix(self) -> None:
+        assert cli.install_kind("", "/Users/x/.cache/uv/archive-v0/abc")[0] == "ephemeral"
+
+    def test_plain_venv_is_pip(self) -> None:
+        assert cli.install_kind("", "/Users/x/project/.venv")[0] == "pip"
+
+    def test_unparsable_payload_falls_back(self) -> None:
+        assert cli.install_kind("{not json", "/x/.venv")[0] == "pip"
+
+    def test_editable_wins_over_prefix(self) -> None:
+        payload = '{"url":"file:///scratch/checkout","dir_info":{"editable":true}}'
+        assert cli.install_kind(payload, "/x/.local/pipx/venvs/pi-sync-cli")[0] == "editable"
+
+
+def test_help_usage_reads_as_the_program_not_the_subcommand() -> None:
+    result = CliRunner().invoke(cli.app, ["--help"], prog_name="pi-sync")
+    assert "Usage: pi-sync [OPTIONS] [USER@]HOST..." in result.output
+    assert "pi-sync sync" not in result.output

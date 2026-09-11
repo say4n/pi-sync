@@ -1,3 +1,5 @@
-"""Sync pi agent config and extensions between hosts over rsync."""
+"""Sync pi agent config between hosts over rsync.
 
-__version__ = "0.1.0"
+The version lives in the distribution metadata (see `pi-sync --version`), so
+there is deliberately no `__version__` here to fall out of step with it.
+"""
