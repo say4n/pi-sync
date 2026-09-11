@@ -23,8 +23,6 @@ Requires Python 3.10+. `uv tool install` works in place of `pipx install`.
 
 ## What syncs
 
-Only the declarative parts of the agent dir:
-
 | Group | Files |
 | --- | --- |
 | `--config` | `models.json`, `settings.json` |
@@ -33,9 +31,8 @@ Only the declarative parts of the agent dir:
 
 `--all` is `--config` + `--extensions` (also the default when no flag is given).
 
-Host-local state is deliberately never touched: `sessions/`, `npm/`,
-`models-store.json` (regenerated from the pi.dev catalog), `ayu/`, `bin/`,
-`trust.json`.
+Your host-local state is never touched: `sessions/`, `npm/`,
+`models-store.json`, `ayu/`, `bin/`, `trust.json`.
 
 ## Flags
 
@@ -53,128 +50,18 @@ Host-local state is deliberately never touched: `sessions/`, `npm/`,
 | `--remote-dir` | default `~/.pi/agent` |
 | `-v` / `--verbose` | print each rsync command and its output |
 
-Multiple hosts are accepted: `pi-sync a b c`. Exits non-zero if any host is
-unreachable or any transfer fails.
-
-Anything pi-sync overwrites on the destination is kept beside it as
+Several hosts at once: `pi-sync a b c`. The run exits non-zero when a host cannot
+be synced. Anything overwritten on the destination is kept beside it as
 `<name>.backup`.
 
-## Host preflight
+## Hosts without pi
 
-Each host gets one ssh probe that reports reachability and pi's location in the
-same round trip.
+Each host is checked before syncing. If pi is missing, pi-sync offers to install
+it — interactively, pi's installer takes over your terminal, and the sync
+continues when it exits. `--install` does that unattended.
 
-If pi is missing, pi-sync hands the terminal to pi's own installer
-(`curl -fsSL https://pi.dev/install.sh | sh`), which keeps full control: its
-prompts (its install/uninstall/do-nothing menu, a Node.js install, a sudo
-password) work normally, and the sync continues once it exits. pi-sync does not
-add a confirmation of its own, because the installer already asks. Without a
-terminal it runs unattended under `--install`, stays quiet otherwise, and
-`--dry-run` never installs anything.
-
-The installer's exit status is not treated as proof: its "do nothing" choice
-exits 0, so the host is re-probed afterwards and reported honestly.
-
-**A host without pi is skipped** — copying into a host that has never run pi is
-not useful and usually fails anyway, since there is no agent directory to copy
-into. That covers an installer run that installed nothing, a failed install, and
-a non-interactive run without `--install`; a skipped host makes the run exit
-non-zero. After a successful install pi-sync creates the agent directory,
-because rsync will not create intermediate directories on its own.
-
-The probe checks `command -v pi` plus the usual install locations
-(`~/.local/bin`, `~/.pi/bin`, `~/.pi/agent/bin`, linuxbrew, homebrew,
-`/usr/local/bin`), because a non-interactive ssh session does not source the
-host's shell init — on a linuxbrew host `command -v pi` alone misses it.
-
-## Updating
-
-`pi-sync update` upgrades this tool through whichever installer owns it —
-`pipx upgrade`, `uv tool upgrade`, or `pip install --upgrade` — and reports the
-version it moved from and to. `--check` reports without changing anything.
-Running from a source checkout it tells you to `git pull` instead, and from an
-ephemeral `uvx --from …` environment it explains that there is nothing to
-upgrade.
-
-`pi-sync --update-pi <hosts>` runs pi's own updater (`pi update --self`) on each
-host before syncing, so the fleet does not drift:
-
-```console
-$ pi-sync --update-pi tinfoil
-→ tinfoil
-  pi 0.85.1 → 0.86.0
-  models.json    already in sync
-  settings.json  already in sync
-  extensions     already in sync
-```
-
-`update` is a reserved word — a host with that alias is still reachable as
-`user@update`.
-
-## Uninstalling
-
-`--uninstall` removes pi from the host instead of syncing. It runs
-`npm uninstall -g --prefix <prefix> @earendil-works/pi-coding-agent`, deriving the
-prefix from where pi actually lives (as the official installer does), then
-re-probes to confirm the binary is really gone — npm can exit 0 having removed
-nothing. `~/.pi/agent` is deliberately left untouched, since that is your config
-rather than the CLI.
-
-This exists because the official installer can only uninstall through its
-interactive menu: its unattended mode always installs or reinstalls. If the
-uninstall fails, that is usually a managed install
-(`PI_EXPERIMENTAL=1`, under `<agent dir>/install`) — run
-`curl -fsSL https://pi.dev/install.sh | sh` on the host and choose `u`.
-
-## Shell completions
-
-Host arguments complete from `~/.ssh/config`, following `Include` directives and
-skipping wildcard entries. zsh and fish also show where each alias points:
-
-```console
-$ pi-sync t<TAB>
-tinfoil          tinfoil@tinfoil.sayan.page
-tinfoil-proxy    notdebian@100.98.241.11
-```
-
-```bash
-# bash
-_PI_SYNC_COMPLETE=bash_source pi-sync > ~/.pi-sync-complete.bash
-echo 'source ~/.pi-sync-complete.bash' >> ~/.bashrc
-
-# zsh
-_PI_SYNC_COMPLETE=zsh_source pi-sync > ~/.pi-sync-complete.zsh
-echo 'source ~/.pi-sync-complete.zsh' >> ~/.zshrc
-
-# fish (config.fish)
-_PI_SYNC_COMPLETE=fish_source pi-sync | source
-```
-
-Writing the script out (rather than `eval "$(_PI_SYNC_COMPLETE=bash_source pi-sync)"`
-on every shell start) keeps shell startup fast, since the eval form runs the
-binary each time. PowerShell works the same way via `powershell_source`.
-
-Completions are read from the config at completion time, so new hosts appear
-without regenerating anything.
-
-## Caveats
-
-- `settings.json` is machine-written by pi (`lastChangelogVersion` bumps, UI
-  toggles), so two hosts pushing it will overwrite each other's local
-  preferences. Sync it when you change `packages`, not reflexively — and note the
-  overwritten copy is kept as `settings.json.backup` on the receiving host.
-- `*.backup` files are never synced, so those copies stay host-local and never
-  trampoline between hosts. `--delete` suppresses backups for the mirrored
-  directory, because mirroring means "match exactly".
-- Extensions that write runtime files inside their own directory (logs,
-  checkpoints) get those files synced too, and each host's copy is overwritten by
-  whichever side pushed last — exclude them with `-x '*/logs/*'`.
-- Extension versions are whatever each host has installed; pin them in
-  `settings.json` (`npm:pi-lens@1.2.3`) if you need hosts identical.
-- `--auth` copies API keys in the clear. Prefer `OPENCODE_API_KEY` (and friends)
-  in the environment where you can.
-- Remote paths go through the host's shell, so `~` expands there as usual.
+A host that still has no pi afterwards is skipped, and the run exits non-zero.
 
 ## Developing
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for the layout, tests and release process.
+See [DEVELOPMENT.md](DEVELOPMENT.md).

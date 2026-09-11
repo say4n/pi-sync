@@ -25,6 +25,53 @@ Three design anchors worth understanding before editing:
   An older install can coexist under the pre-rename name `pi-sync`, and a
   hardcoded name would upgrade the wrong virtualenv — or nothing.
 
+## How it works
+
+**One probe per host.** `probe_host` pipes a POSIX sh script through
+`ssh host sh -s`, so reachability and pi's location cost a single round trip. It
+checks `command -v pi` and then the usual install locations (`~/.local/bin`,
+`~/.pi/bin`, `~/.pi/agent/bin`, linuxbrew, homebrew, `/usr/local/bin`) because a
+non-interactive ssh session does not source the host's shell init — on a
+linuxbrew host `command -v pi` alone finds nothing.
+
+**Installing pi.** Interactively the terminal is handed to pi's own installer and
+the sync resumes when it exits. Unattended (`--install` with no tty) the output is
+captured and stdin is closed, so a prompt fails fast instead of hanging. The
+installer's exit status is not trusted — its "do nothing" menu choice exits 0 —
+so `install_pi` re-probes and reports honestly. A host that still lacks pi is
+skipped, which makes the run exit non-zero. After a successful install,
+`mkdir -p` creates the agent directory, because rsync will not create
+intermediate directories itself.
+
+**Uninstalling.** The official installer can only uninstall through its
+interactive menu (its unattended mode always installs or reinstalls), so pi-sync
+issues the npm command that menu would have: `npm uninstall -g --prefix <prefix>
+@earendil-works/pi-coding-agent`, with the prefix derived from where pi actually
+lives. It re-probes afterwards, since npm can exit 0 having removed nothing. Only
+the CLI goes; the agent directory is never touched.
+
+**Self-update.** `update` classifies the running environment and delegates:
+
+| Detected | Action |
+| --- | --- |
+| pipx | `pipx upgrade <dist>` |
+| uv tool | `uv tool upgrade <dist>` |
+| editable checkout | prints `git -C <path> pull` |
+| uvx ephemeral | nothing to do; suggests a durable install |
+| otherwise | `python -m pip install --upgrade <dist>` |
+
+It resolves the distribution from its own environment instead of hardcoding a
+name, and refuses to downgrade when the local version is ahead of PyPI.
+
+**Completions.** Read from `~/.ssh/config` at completion time, following
+`Include` and skipping wildcard entries; `CompletionItem.help` carries
+`user@hostname` for the shells that render it (bash cannot).
+
+**rsync invocation.** `-az -i`, plus `--backup --suffix=.backup` and
+`--exclude=*.backup` so replaced files are kept but backups never travel, and
+`--delete-during` only for `extensions/` when `--delete` is given — which also
+suppresses backups for that directory.
+
 ## Commands
 
 ```bash

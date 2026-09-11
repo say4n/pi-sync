@@ -60,3 +60,58 @@ uv run pi-sync --help
   `.backup` is kept, but don't be cavalier about it.
 - `~/.ssh/config` is protected: read it through code that extracts host aliases,
   and don't dump its contents into output or a commit.
+
+Kept out of the README: these describe *using* pi-sync rather than changing
+it, and are collected here so the README stays a short front page.
+
+## Updating
+
+- `pi-sync update` upgrades pi-sync itself, through whichever installer owns it
+  (`--check` reports without changing anything).
+- `pi-sync --update-pi <hosts>` updates pi on the hosts before syncing.
+
+## Uninstalling pi from a host
+
+`pi-sync --uninstall <hosts>` removes pi and leaves your config in place. If it
+fails, run `curl -fsSL https://pi.dev/install.sh | sh` on the host and choose
+`u` instead.
+
+## Shell completions
+
+Host arguments complete from `~/.ssh/config`. zsh and fish also show where each
+alias points:
+
+```console
+$ pi-sync t<TAB>
+tinfoil          tinfoil@tinfoil.sayan.page
+tinfoil-proxy    notdebian@100.98.241.11
+```
+
+```bash
+# bash
+_PI_SYNC_COMPLETE=bash_source pi-sync > ~/.pi-sync-complete.bash
+echo 'source ~/.pi-sync-complete.bash' >> ~/.bashrc
+
+# zsh
+_PI_SYNC_COMPLETE=zsh_source pi-sync > ~/.pi-sync-complete.zsh
+echo 'source ~/.pi-sync-complete.zsh' >> ~/.zshrc
+
+# fish (config.fish)
+_PI_SYNC_COMPLETE=fish_source pi-sync | source
+```
+
+PowerShell uses `powershell_source` the same way.
+
+## Caveats
+
+- `settings.json` is written by pi itself (`lastChangelogVersion` bumps, UI
+  toggles), so pushing it overwrites the host's local preferences — the previous
+  copy is kept as `settings.json.backup`. Sync it when you change `packages`.
+- Extensions that keep runtime files in their own directory (logs, checkpoints)
+  get those files synced too, and whichever side pushes last wins. Exclude them
+  with `-x '*/logs/*'`.
+- Extension versions are whatever each host has installed; pin them in
+  `settings.json` (`npm:pi-lens@1.2.3`) if you need hosts identical.
+- `--auth` copies API keys in the clear. Prefer `OPENCODE_API_KEY` (and friends)
+  in the environment where you can.
+- `--delete` disables backups for the mirrored directory.
