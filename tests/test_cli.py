@@ -465,7 +465,9 @@ class TestCompletion:
     def test_empty_incomplete_lists_everything(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(cli, "ssh_config_hosts", lambda *a, **k: self.hosts("a", "b"))
+        monkeypatch.setattr(
+            cli, "ssh_config_hosts", lambda *a, **k: self.hosts("a", "b")
+        )
         assert self.complete("") == ["a", "b"]
 
     def test_user_at_prefix_is_preserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
