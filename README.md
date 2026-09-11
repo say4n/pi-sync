@@ -8,6 +8,7 @@ pi-sync tinfoil                  # push config + extensions
 pi-sync --config laptop          # only models.json and settings.json
 pi-sync --pull --all tinfoil     # fetch the host's config back
 pi-sync --dry-run --all a b      # preview against two hosts
+pi-sync update                   # update pi-sync itself
 ```
 
 ## Install
@@ -47,12 +48,16 @@ Host-local state is deliberately never touched: `sessions/`, `npm/`,
 | `-x, --exclude PATTERN` | skip matching files (repeatable) |
 | `--install` | install pi on hosts that lack it, without prompting |
 | `--uninstall` | remove pi from the host instead of syncing (config is kept) |
+| `--update-pi` | update pi on each host before syncing |
 | `--local-dir` | default `$PI_CODING_AGENT_DIR` or `~/.pi/agent` |
 | `--remote-dir` | default `~/.pi/agent` |
 | `-v` / `--verbose` | print each rsync command and its output |
 
 Multiple hosts are accepted: `pi-sync a b c`. Exits non-zero if any host is
 unreachable or any transfer fails.
+
+Anything pi-sync overwrites on the destination is kept beside it as
+`<name>.backup`.
 
 ## Host preflight
 
@@ -82,6 +87,30 @@ The probe checks `command -v pi` plus the usual install locations
 `/usr/local/bin`), because a non-interactive ssh session does not source the
 host's shell init — on a linuxbrew host `command -v pi` alone misses it.
 
+## Updating
+
+`pi-sync update` upgrades this tool through whichever installer owns it —
+`pipx upgrade`, `uv tool upgrade`, or `pip install --upgrade` — and reports the
+version it moved from and to. `--check` reports without changing anything.
+Running from a source checkout it tells you to `git pull` instead, and from an
+ephemeral `uvx --from …` environment it explains that there is nothing to
+upgrade.
+
+`pi-sync --update-pi <hosts>` runs pi's own updater (`pi update --self`) on each
+host before syncing, so the fleet does not drift:
+
+```console
+$ pi-sync --update-pi tinfoil
+→ tinfoil
+  pi 0.85.1 → 0.86.0
+  models.json    already in sync
+  settings.json  already in sync
+  extensions     already in sync
+```
+
+`update` is a reserved word — a host with that alias is still reachable as
+`user@update`.
+
 ## Uninstalling
 
 `--uninstall` removes pi from the host instead of syncing. It runs
@@ -100,7 +129,13 @@ uninstall fails, that is usually a managed install
 ## Shell completions
 
 Host arguments complete from `~/.ssh/config`, following `Include` directives and
-skipping wildcard entries:
+skipping wildcard entries. zsh and fish also show where each alias points:
+
+```console
+$ pi-sync t<TAB>
+tinfoil          tinfoil@tinfoil.sayan.page
+tinfoil-proxy    notdebian@100.98.241.11
+```
 
 ```bash
 # bash
@@ -128,12 +163,9 @@ without regenerating anything.
   toggles), so two hosts pushing it will overwrite each other's local
   preferences. Sync it when you change `packages`, not reflexively — and note the
   overwritten copy is kept as `settings.json.backup` on the receiving host.
-- Anything pi-sync overwrites is kept on the destination as `<name>.backup`, and
-  `*.backup` is never synced, so those copies stay host-local and never
-trampoline between hosts. `--delete` suppresses backups for the mirrored
-  directory, because mirroring means "match exactly" — which also sidesteps an
-  openrsync bug where backing up a file it deletes fails with
-  `fchownat: Operation not permitted`.
+- `*.backup` files are never synced, so those copies stay host-local and never
+  trampoline between hosts. `--delete` suppresses backups for the mirrored
+  directory, because mirroring means "match exactly".
 - Extensions that write runtime files inside their own directory (logs,
   checkpoints) get those files synced too, and each host's copy is overwritten by
   whichever side pushed last — exclude them with `-x '*/logs/*'`.
@@ -143,10 +175,6 @@ trampoline between hosts. `--delete` suppresses backups for the mirrored
   in the environment where you can.
 - Remote paths go through the host's shell, so `~` expands there as usual.
 
-## Development
+## Developing
 
-```bash
-uv sync
-uv run pytest
-uv run pi-sync --help
-```
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the layout, tests and release process.
