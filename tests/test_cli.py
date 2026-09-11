@@ -1,10 +1,16 @@
-"""Tests for pi-sync. No ssh or rsync process is ever executed."""
+"""Tests for pi-sync.
+
+Covers flag→item selection, rsync argv construction, ssh-config host
+completion, and the per-host pi probe/install path. No ssh or rsync process is
+ever executed.
+"""
 
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -19,19 +25,29 @@ class FakeRun:
         rsync_stdout: str = ">f+++++++ models.json\n",
         rsync_rc: int = 0,
         ssh_rc: int = 0,
+        pi_path: str | None = "/usr/bin/pi",
+        install_rc: int = 0,
     ):
         self.calls: list[list[str]] = []
+        self.inputs: list[str | None] = []
         self.rsync_stdout = rsync_stdout
         self.rsync_rc = rsync_rc
         self.ssh_rc = ssh_rc
+        self.pi_path = pi_path
+        self.install_rc = install_rc
 
-    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+    def __call__(self, argv: list[str], input_text: str | None = None) -> subprocess.CompletedProcess[str]:
         self.calls.append(argv)
-        if argv[0] == "ssh":
-            return subprocess.CompletedProcess(
-                argv, self.ssh_rc, "", "" if self.ssh_rc == 0 else "ssh: connect failed"
-            )
-        return subprocess.CompletedProcess(argv, self.rsync_rc, self.rsync_stdout, "")
+        self.inputs.append(input_text)
+        if argv[0] != "ssh":
+            return subprocess.CompletedProcess(argv, self.rsync_rc, self.rsync_stdout, "")
+        if any("install.sh" in arg for arg in argv):
+            stderr = "" if self.install_rc == 0 else "curl: (22) installer failed"
+            return subprocess.CompletedProcess(argv, self.install_rc, "installed\n", stderr)
+        if self.ssh_rc:
+            return subprocess.CompletedProcess(argv, self.ssh_rc, "", "ssh: connect failed")
+        probe = f"PI:{self.pi_path}\n" if self.pi_path else ""
+        return subprocess.CompletedProcess(argv, 0, probe, "")
 
 
 @pytest.fixture
@@ -166,10 +182,12 @@ def test_flags_select_items(
     assert sources(fake) == expected
 
 
-def test_ssh_preflight_runs_before_rsync(fake: FakeRun, agent_dir: Path) -> None:
+def test_ssh_probe_runs_before_rsync(fake: FakeRun, agent_dir: Path) -> None:
     CliRunner().invoke(cli.main, ["--local-dir", str(agent_dir), "host"])
-    assert fake.calls[0] == ["ssh", "-o", "ConnectTimeout=10", "host", "true"]
+    assert fake.calls[0] == ["ssh", "-o", "ConnectTimeout=10", "host", "sh -s"]
     assert fake.calls[1][0] == "rsync"
+    # the probe script is piped over stdin so it works under fish/csh too
+    assert "command -v pi" in (fake.inputs[0] or "")
 
 
 def test_missing_local_item_is_skipped(fake: FakeRun, tmp_path: Path) -> None:
@@ -268,3 +286,159 @@ def test_local_dir_env_override(
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path))
     assert cli.local_agent_dir() == tmp_path
     assert cli.local_agent_dir("/explicit") == Path("/explicit")
+
+
+def ssh_probe_calls(fake: FakeRun) -> list[list[str]]:
+    """ssh calls that are the pi probe (not the installer)."""
+    return [c for c in fake.calls if c[0] == "ssh" and not any("install.sh" in a for a in c)]
+
+
+def install_calls(fake: FakeRun) -> list[list[str]]:
+    return [c for c in fake.calls if any("install.sh" in a for a in c)]
+
+
+class TestSshHosts:
+    def test_single_host(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        cfg.write_text("Host tinfoil\n  HostName tinfoil.example\n")
+        assert cli.ssh_hosts(str(cfg)) == ["tinfoil"]
+
+    def test_multiple_tokens_and_trailing_whitespace(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        cfg.write_text("Host svalbard \nHost a b\n")
+        assert cli.ssh_hosts(str(cfg)) == ["svalbard", "a", "b"]
+
+    def test_wildcards_and_negations_skipped(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        cfg.write_text("Host *.orb.local\nHost api.example.com !api.internal\nHost real\n")
+        assert cli.ssh_hosts(str(cfg)) == ["api.example.com", "real"]
+
+    def test_directives_are_case_insensitive(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        cfg.write_text("HOST upper\nhost lower\n")
+        assert cli.ssh_hosts(str(cfg)) == ["upper", "lower"]
+
+    def test_comments_and_blank_lines_ignored(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        cfg.write_text("# a comment\n\n   # indented comment\nHost real\n")
+        assert cli.ssh_hosts(str(cfg)) == ["real"]
+
+    def test_non_host_directives_ignored(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        cfg.write_text("Host real\n  HostName example.com\n  User bob\n  Port 2222\n")
+        assert cli.ssh_hosts(str(cfg)) == ["real"]
+
+    def test_include_is_followed_and_deduped(self, tmp_path: Path) -> None:
+        extra = tmp_path / "extra_config"
+        extra.write_text("Host orb\nHost tinfoil\n")
+        cfg = tmp_path / "config"
+        cfg.write_text(f"Host tinfoil\nInclude {extra}\n")
+        assert cli.ssh_hosts(str(cfg)) == ["tinfoil", "orb"]
+
+    def test_include_glob(self, tmp_path: Path) -> None:
+        (tmp_path / "conf.d").mkdir()
+        (tmp_path / "conf.d" / "a").write_text("Host alpha\n")
+        (tmp_path / "conf.d" / "b").write_text("Host beta\n")
+        cfg = tmp_path / "config"
+        cfg.write_text(f"Include {tmp_path}/conf.d/*\n")
+        assert cli.ssh_hosts(str(cfg)) == ["alpha", "beta"]
+
+    def test_include_cycle_terminates(self, tmp_path: Path) -> None:
+        cfg = tmp_path / "config"
+        other = tmp_path / "other"
+        cfg.write_text(f"Host one\nInclude {other}\n")
+        other.write_text(f"Host two\nInclude {cfg}\n")
+        assert cli.ssh_hosts(str(cfg)) == ["one", "two"]
+
+    def test_missing_config_is_empty(self, tmp_path: Path) -> None:
+        assert cli.ssh_hosts(str(tmp_path / "nope")) == []
+
+
+class TestCompletion:
+    @staticmethod
+    def complete(incomplete: str) -> list[str]:
+        """Run the completion callback the way click would."""
+        ctx = click.Context(cli.main)
+        items = cli.complete_target(ctx, cli.main.params[0], incomplete)
+        return [item.value for item in items]
+
+    def test_completes_matching_hosts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli, "ssh_hosts", lambda *a, **k: ["tinfoil", "zero-frame", "phatboi"])
+        assert self.complete("t") == ["tinfoil"]
+
+    def test_empty_incomplete_lists_everything(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli, "ssh_hosts", lambda *a, **k: ["a", "b"])
+        assert self.complete("") == ["a", "b"]
+
+    def test_user_at_prefix_is_preserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli, "ssh_hosts", lambda *a, **k: ["tinfoil", "zero-frame"])
+        assert self.complete("sayan@zer") == ["sayan@zero-frame"]
+
+
+class TestProbe:
+    def test_reports_pi_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli, "run_cmd", FakeRun(pi_path="/home/linuxbrew/.linuxbrew/bin/pi"))
+        assert cli.probe_host("host") == (None, "/home/linuxbrew/.linuxbrew/bin/pi")
+
+    def test_reports_missing_pi(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli, "run_cmd", FakeRun(pi_path=None))
+        assert cli.probe_host("host") == (None, None)
+
+    def test_reports_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli, "run_cmd", FakeRun(ssh_rc=255))
+        error, pi_path = cli.probe_host("host")
+        assert error == "ssh: connect failed"
+        assert pi_path is None
+
+
+class TestInstallOffering:
+    def test_no_install_when_pi_present(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        fake = FakeRun(pi_path="/usr/bin/pi")
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(cli.main, ["--local-dir", str(agent_dir), "host"])
+        assert result.exit_code == 0
+        assert install_calls(fake) == []
+
+    def test_hint_when_not_a_tty(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        fake = FakeRun(pi_path=None)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(cli.main, ["--local-dir", str(agent_dir), "host"])
+        assert install_calls(fake) == []
+        assert "--install" in result.output
+
+    def test_install_flag_installs(self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path) -> None:
+        fake = FakeRun(pi_path=None)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(
+            cli.main, ["--install", "--local-dir", str(agent_dir), "host"]
+        )
+        assert result.exit_code == 0
+        (call,) = install_calls(fake)
+        assert call[-1] == cli.PI_INSTALL_CMD
+        assert "installed pi on host" in result.output
+
+    def test_install_failure_is_reported_but_sync_continues(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        fake = FakeRun(pi_path=None, install_rc=22)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(
+            cli.main, ["--install", "--local-dir", str(agent_dir), "host"]
+        )
+        assert "pi install failed" in result.output
+        assert any(c[0] == "rsync" for c in fake.calls)
+
+    def test_no_install_attempt_when_unreachable(
+        self, monkeypatch: pytest.MonkeyPatch, agent_dir: Path
+    ) -> None:
+        fake = FakeRun(pi_path=None, ssh_rc=255)
+        monkeypatch.setattr(cli, "run_cmd", fake)
+        result = CliRunner().invoke(
+            cli.main, ["--install", "--local-dir", str(agent_dir), "host"]
+        )
+        assert result.exit_code == 1
+        assert install_calls(fake) == []
