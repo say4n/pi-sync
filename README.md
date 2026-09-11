@@ -13,7 +13,8 @@ pi-sync --dry-run --all a b      # preview against two hosts
 ## Install
 
 ```bash
-pipx install pi-sync                                  # from PyPI
+# the PyPI package is pi-sync-cli; it installs the `pi-sync` command
+pipx install pi-sync-cli
 pipx install git+ssh://git@github.com/say4n/pi-sync   # from source (needs access)
 ```
 

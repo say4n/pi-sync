@@ -1,5 +1,5 @@
 [project]
-name = "pi-sync"
+name = "pi-sync-cli"
 version = "0.1.0"
 description = "Sync pi agent config and extensions between hosts over rsync"
 readme = "README.md"

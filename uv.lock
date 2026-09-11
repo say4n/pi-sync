@@ -51,7 +51,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pi-sync"
+name = "pi-sync-cli"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
