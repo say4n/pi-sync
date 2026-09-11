@@ -1060,7 +1060,9 @@ class TestDirectReferenceInstalls:
         self, fake: FakeRun, monkeypatch: pytest.MonkeyPatch, kind: str
     ) -> None:
         monkeypatch.setattr(
-            cli, "running_install", lambda: cli.Install("pi-sync-cli", "0.5.0", kind, "/x")
+            cli,
+            "running_install",
+            lambda: cli.Install("pi-sync-cli", "0.5.0", kind, "/x"),
         )
         monkeypatch.setattr(cli, "latest_version", lambda dist: "9.9.9")
         result = CliRunner().invoke(cli.app, ["update"])
