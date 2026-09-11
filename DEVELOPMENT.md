@@ -50,15 +50,22 @@ issues the npm command that menu would have: `npm uninstall -g --prefix <prefix>
 lives. It re-probes afterwards, since npm can exit 0 having removed nothing. Only
 the CLI goes; the agent directory is never touched.
 
-**Self-update.** `update` classifies the running environment and delegates:
+**Self-update.** `update` classifies the running environment and delegates. Only
+an *index* install can move to a newer release; a `direct_url.json` payload means
+the install follows a direct reference, so updating it would just rebuild that
+reference — the command says so rather than reporting a version change it never
+made.
 
 | Detected | Action |
 | --- | --- |
-| pipx | `pipx upgrade <dist>` |
-| uv tool | `uv tool upgrade <dist>` |
-| editable checkout | prints `git -C <path> pull` |
+| index install via pipx | `pipx upgrade <dist>` |
+| index install via uv tool | `uv tool upgrade <dist>` |
+| index install in a plain venv | `python -m pip install --upgrade <dist>` |
+| `dir_info.editable` | prints `git -C <path> pull` |
+| `dir_info` (a directory build) | reports the directory, suggests a `--force` reinstall from PyPI |
+| `vcs_info` | reports the repo; there is no release to fetch |
+| `archive_info` | reports the file; there is no release to fetch |
 | uvx ephemeral | nothing to do; suggests a durable install |
-| otherwise | `python -m pip install --upgrade <dist>` |
 
 It resolves the distribution from its own environment instead of hardcoding a
 name, and refuses to downgrade when the local version is ahead of PyPI.

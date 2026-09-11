@@ -384,6 +384,12 @@ def install_kind(direct_url: str, prefix: str) -> tuple[str, str]:
 
     The payload is parsed rather than pattern-matched: uv and pip disagree about
     whitespace in `direct_url.json`, so a substring test silently misses one.
+
+    A payload means the package was installed from a *direct reference*, which
+    cannot be upgraded from an index: a directory is rebuilt from that directory,
+    a VCS install is re-fetched from that repo, and a distribution file can only
+    ever be reinstalled. No payload at all means an ordinary index install, which
+    is the only kind `pipx upgrade`/`uv tool upgrade` can move to a new release.
     """
     try:
         info = json.loads(direct_url) if direct_url else {}
@@ -391,9 +397,16 @@ def install_kind(direct_url: str, prefix: str) -> tuple[str, str]:
         info = {}
     if not isinstance(info, dict):
         info = {}
+    url = str(info.get("url", "")).removeprefix("file://")
     dir_info = info.get("dir_info")
     if isinstance(dir_info, dict) and dir_info.get("editable"):
-        return "editable", str(info.get("url", "")).removeprefix("file://")
+        return "editable", url
+    if isinstance(dir_info, dict):
+        return "dir", url
+    if isinstance(info.get("vcs_info"), dict):
+        return "vcs", str(info.get("url", ""))
+    if isinstance(info.get("archive_info"), dict):
+        return "archive", url
     if "/pipx/venvs/" in prefix:
         return "pipx", prefix
     if "/uv/tools/" in prefix:
@@ -516,6 +529,22 @@ def update_cmd(check: bool) -> None:
     if install.kind == "editable":
         click.echo(
             f"running from a checkout; update it with:\n  git -C {install.detail} pull"
+        )
+        return
+    if install.kind in {"dir", "vcs", "archive"}:
+        # Rebuilding the same source would not move this install to a release, and
+        # saying "upgrading x → y" here would be a lie about what just happened.
+        source = {
+            "dir": "a local directory",
+            "vcs": "a git repository",
+            "archive": "a local distribution file",
+        }[install.kind]
+        click.echo(f"installed from {source}: {install.detail}")
+        click.echo("this copy follows that source, so there is no release to fetch.")
+        click.echo(
+            "to follow PyPI releases instead:\n"
+            f"  pipx install --force {install.dist}\n"
+            f"  uv tool install --force {install.dist}"
         )
         return
     if install.kind == "ephemeral":

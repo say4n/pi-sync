@@ -1012,3 +1012,57 @@ def test_help_usage_reads_as_the_program_not_the_subcommand() -> None:
     result = CliRunner().invoke(cli.app, ["--help"], prog_name="pi-sync")
     assert "Usage: pi-sync [OPTIONS] [USER@]HOST..." in result.output
     assert "pi-sync sync" not in result.output
+
+
+class TestDirectReferenceInstalls:
+    """A direct reference can't be upgraded from an index; say so, don't pretend."""
+
+    def test_local_directory_build(self) -> None:
+        payload = '{"url":"file:///Users/x/pi-sync","dir_info":{}}'
+        assert cli.install_kind(payload, "/Users/x/pipx/venvs/pi-sync-cli") == (
+            "dir",
+            "/Users/x/pi-sync",
+        )
+
+    def test_vcs_install(self) -> None:
+        payload = (
+            '{"url":"ssh://git@github.com/say4n/pi-sync",'
+            '"vcs_info":{"vcs":"git","commit_id":"abc123"}}'
+        )
+        assert cli.install_kind(payload, "/x/venv") == (
+            "vcs",
+            "ssh://git@github.com/say4n/pi-sync",
+        )
+
+    def test_archive_install(self) -> None:
+        payload = '{"url":"file:///scratch/pi_sync_cli-0.1.0.tar.gz","archive_info":{}}'
+        assert cli.install_kind(payload, "/x/venv") == (
+            "archive",
+            "/scratch/pi_sync_cli-0.1.0.tar.gz",
+        )
+
+    def test_updates_are_refused_with_a_reinstall_hint(
+        self, fake: FakeRun, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            cli,
+            "running_install",
+            lambda: cli.Install("pi-sync-cli", "0.5.0", "dir", "/Users/x/pi-sync"),
+        )
+        result = CliRunner().invoke(cli.app, ["update"])
+        assert result.exit_code == 0, result.output
+        assert "installed from a local directory: /Users/x/pi-sync" in result.output
+        assert "pipx install --force pi-sync-cli" in result.output
+        assert not any(c[0] in ("pipx", "uv") for c in fake.calls)
+
+    @pytest.mark.parametrize("kind", ["dir", "vcs", "archive"])
+    def test_never_claims_a_release_upgrade(
+        self, fake: FakeRun, monkeypatch: pytest.MonkeyPatch, kind: str
+    ) -> None:
+        monkeypatch.setattr(
+            cli, "running_install", lambda: cli.Install("pi-sync-cli", "0.5.0", kind, "/x")
+        )
+        monkeypatch.setattr(cli, "latest_version", lambda dist: "9.9.9")
+        result = CliRunner().invoke(cli.app, ["update"])
+        assert "9.9.9" not in result.output
+        assert "no release to fetch" in result.output
