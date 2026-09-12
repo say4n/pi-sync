@@ -1083,7 +1083,10 @@ class TestGroupCompletion:
         monkeypatch.setattr(
             cli,
             "ssh_config_hosts",
-            lambda *a, **k: [cli.SshHost("tinfoil", "tinfoil.sayan.page"), cli.SshHost("zero")],
+            lambda *a, **k: [
+                cli.SshHost("tinfoil", "tinfoil.sayan.page"),
+                cli.SshHost("zero"),
+            ],
         )
 
     def test_bare_tab_offers_hosts_not_subcommands(self) -> None:
